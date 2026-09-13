@@ -972,7 +972,7 @@ fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template(" downloading {binary_remaining_bytes}/{binary_total_bytes} [{wide_bar:.cyan/blue}] {msg}")
+        ProgressStyle::with_template(" downloading [{wide_bar:.cyan/blue}] {binary_remaining_bytes}/{binary_total_bytes} {msg}")
             .unwrap()
             .progress_chars("██░"),
     );
