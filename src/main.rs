@@ -228,6 +228,11 @@ pub struct SendArgs {
     #[clap(long)]
     pub noarchive: bool,
 
+    /// Keep the sender running after the first complete transfer
+    /// (normally it exits once a receiver has downloaded the data).
+    #[clap(long)]
+    pub nostop: bool,
+
     /// Show debug details: content hash, per-file listing, import speed.
     #[clap(long)]
     pub debug: bool,
@@ -893,9 +898,10 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     handle_key_press(args.clipboard, ticket);
 
     // Exit after the first complete transfer, or on Ctrl-C.
+    // With --nostop the sender keeps running until Ctrl-C.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
-        _ = done_rx.recv() => {
+        _ = done_rx.recv(), if !args.nostop => {
             println!("{}", style("transfer complete").green());
         }
     }
