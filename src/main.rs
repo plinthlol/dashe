@@ -972,9 +972,9 @@ fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{spinner:.green}{msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec}")
+        ProgressStyle::with_template("{msg} [{wide_bar:.cyan/blue}] {remaining_bytes}/{total_bytes} ({eta})")
             .unwrap()
-            .progress_chars("#>-"),
+            .progress_chars("██░"),
     );
     pb.set_message(" downloading".to_string());
     pb
@@ -1100,16 +1100,11 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
             let total_files = (sizes.len().saturating_sub(1)) as u64;
             let noun = if total_files == 1 { "file" } else { "files" };
             eprintln!(
-                "{} fetching {} {} ({})",
+                "{} {} {} ({})",
                 style("fetching").cyan(),
                 total_files,
                 noun,
                 HumanBytes(payload_size),
-            );
-            eprintln!(
-                "  {} {}",
-                style("from").dim(),
-                print_hash(&ticket.hash(), args.common.format),
             );
             // print the details of the collection only in verbose mode
             if args.common.verbose > 0 {
@@ -1161,15 +1156,15 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                 println!("    {} {name}", print_hash(hash, args.common.format));
             }
         }
-        if let Some((name, _)) = collection.iter().next() {
-            if let Some(first) = name.split('/').next() {
-                println!("{} {}", style("exporting to").cyan(), style(first).bold());
-            }
-        }
+        let root_name = collection
+            .iter()
+            .next()
+            .and_then(|(name, _)| name.split('/').next().map(str::to_string))
+            .unwrap_or_else(|| "data".to_string());
         export(&db, collection, &mut mp).await?;
-        anyhow::Ok((total_files, payload_size, stats))
+        anyhow::Ok((root_name, total_files, payload_size, stats))
     };
-    let (total_files, payload_size, stats) = select! {
+    let (root_name, total_files, payload_size, stats) = select! {
         x = fut => match x {
             Ok(x) => {
                 endpoint.close().await;
@@ -1190,12 +1185,10 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         }
     };
     tokio::fs::remove_dir_all(iroh_data_dir).await?;
-    let noun = if total_files == 1 { "file" } else { "files" };
     println!(
-        "{} {} {} ({}) in {}",
+        "{} {} ({}) in {}",
         style("received").green(),
-        total_files,
-        noun,
+        style(root_name).bold(),
         HumanBytes(payload_size),
         HumanDuration(stats.elapsed),
     );
