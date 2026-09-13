@@ -9,6 +9,7 @@
 # uploaded as workflow artifacts — handy for test builds.
 
 name: release
+run-name: release
 
 # Needed to create the GitHub release and upload assets.
 permissions:
