@@ -224,6 +224,10 @@ pub struct SendArgs {
     #[clap(flatten)]
     pub common: CommonArgs,
 
+    /// Do not compress folders into a single archive before sending.
+    #[clap(long)]
+    pub noarchive: bool,
+
     /// Show debug details: content hash, per-file listing, import speed.
     #[clap(long)]
     pub debug: bool,
@@ -588,6 +592,8 @@ async fn export(db: &Store, collection: Collection, mp: &mut MultiProgress) -> a
 struct PerConnectionProgress {
     endpoint_id: String,
     requests: BTreeMap<u64, ProgressBar>,
+    /// At least one get request completed on this connection.
+    served: bool,
 }
 
 async fn per_request_progress(
@@ -630,6 +636,7 @@ async fn per_request_progress(
             }
             RequestUpdate::Completed(_) => {
                 if let Some(msg) = connections.lock().unwrap().get_mut(&connection_id) {
+                    msg.served = true;
                     msg.requests.remove(&request_id);
                 };
             }
@@ -647,6 +654,7 @@ async fn per_request_progress(
 async fn show_provide_progress(
     mp: MultiProgress,
     mut recv: mpsc::Receiver<ProviderMessage>,
+    done: mpsc::Sender<()>,
 ) -> anyhow::Result<()> {
     let connections = Arc::new(Mutex::new(BTreeMap::new()));
     let mut tasks = FuturesUnordered::new();
@@ -668,15 +676,30 @@ async fn show_provide_progress(
                             PerConnectionProgress {
                                 requests: BTreeMap::new(),
                                 endpoint_id,
+                                served: false,
                             },
                         );
                     }
                     ProviderMessage::ConnectionClosed(msg) => {
-                        if let Some(connection) = connections.lock().unwrap().remove(&msg.connection_id) {
-                            for pb in connection.requests.values() {
-                                pb.finish_and_clear();
-                                mp.remove(pb);
+                        // Do the map mutation without holding the lock across
+                        // the await below (keeps the future Send).
+                        let served = {
+                            let mut map = connections.lock().unwrap();
+                            match map.remove(&msg.connection_id) {
+                                Some(connection) => {
+                                    for pb in connection.requests.values() {
+                                        pb.finish_and_clear();
+                                        mp.remove(pb);
+                                    }
+                                    connection.served
+                                }
+                                None => false,
                             }
+                        };
+                        // The receiver downloaded at least one request and
+                        // disconnected: that counts as a complete send.
+                        if served {
+                            let _ = done.send(()).await;
                         }
                     }
                     ProviderMessage::GetRequestReceivedNotify(msg) => {
@@ -740,12 +763,41 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let mut mp = MultiProgress::new();
     let mp2 = mp.clone();
     let path = args.path;
-    let path2 = path.clone();
+
+    // Compress folders into a single tar.gz before sending, unless
+    // --noarchive was given. The receiver unpacks it automatically.
+    let archived = path.is_dir() && !args.noarchive;
+    let archive_file: Option<PathBuf> = if archived {
+        let folder_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("invalid folder name")?
+            .to_string();
+        let archive_dir = std::env::temp_dir().join(format!("dashe-{}", hex::encode(&suffix[..8])));
+        std::fs::create_dir_all(&archive_dir)?;
+        let archive_path = archive_dir.join(format!("{folder_name}.tar.gz"));
+        let file = std::fs::File::create(&archive_path)?;
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        tar.append_dir_all(&folder_name, &path)?;
+        tar.into_inner()?.finish()?;
+        Some(archive_path)
+    } else {
+        None
+    };
+    let import_path = match &archive_file {
+        Some(p) => p.clone(),
+        None => path.clone(),
+    };
+
+    let path2 = import_path;
     let blobs_data_dir2 = blobs_data_dir.clone();
     let (progress_tx, progress_rx) = mpsc::channel(32);
+    let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
     let progress = AbortOnDropHandle::new(n0_future::task::spawn(show_provide_progress(
         mp2,
         progress_rx,
+        done_tx,
     )));
     let setup = async move {
         let t0 = Instant::now();
@@ -801,7 +853,13 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let mut addr = router.endpoint().addr();
     apply_options(&mut addr, args.ticket_type);
     let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
-    let entry_type = if path.is_file() { "file" } else { "directory" };
+    let entry_type = if path.is_file() {
+        "file"
+    } else if archived {
+        "folder (compressed)"
+    } else {
+        "directory"
+    };
     println!(
         "imported {} {} ({})",
         entry_type,
@@ -834,13 +892,25 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     #[cfg(feature = "clipboard")]
     handle_key_press(args.clipboard, ticket);
 
-    tokio::signal::ctrl_c().await?;
+    // Exit after the first complete transfer, or on Ctrl-C.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = done_rx.recv() => {
+            println!("{}", style("transfer complete").green());
+        }
+    }
 
     drop(temp_tag);
 
     println!("shutting down");
     tokio::time::timeout(Duration::from_secs(2), router.shutdown()).await??;
     tokio::fs::remove_dir_all(blobs_data_dir).await?;
+    if let Some(archive_path) = &archive_file {
+        let _ = std::fs::remove_file(archive_path);
+        if let Some(parent) = archive_path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
     // drop everything that owns blobs to close the progress sender
     drop(router);
     // await progress completion so the progress bar is cleared
@@ -1172,12 +1242,36 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                 println!("    {} {name}", print_hash(hash, args.common.format));
             }
         }
-        let root_name = collection
+        let first_name = collection
             .iter()
             .next()
-            .and_then(|(name, _)| name.split('/').next().map(str::to_string))
-            .unwrap_or_else(|| "data".to_string());
+            .map(|(name, _)| name.clone())
+            .unwrap_or_default();
+        // A single .tar.gz entry means the sender archived a folder.
+        let is_archive = collection.len() == 1 && first_name.ends_with(".tar.gz");
+        let root_name = if is_archive {
+            first_name
+                .strip_suffix(".tar.gz")
+                .unwrap_or(&first_name)
+                .to_string()
+        } else {
+            first_name
+                .split('/')
+                .next()
+                .unwrap_or(&first_name)
+                .to_string()
+        };
         export(&db, collection, &mut mp).await?;
+        if is_archive {
+            // Unpack the archive into the current directory and drop it.
+            let cwd = std::env::current_dir()?;
+            let archive_target = cwd.join(&first_name);
+            let file = std::fs::File::open(&archive_target)
+                .with_context(|| format!("open {}", archive_target.display()))?;
+            let gz = flate2::read::GzDecoder::new(file);
+            tar::Archive::new(gz).unpack(&cwd)?;
+            std::fs::remove_file(&archive_target)?;
+        }
         anyhow::Ok((root_name, total_files, payload_size, stats))
     };
     let (root_name, total_files, payload_size, stats) = select! {
