@@ -972,11 +972,10 @@ fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{msg} [{wide_bar:.cyan/blue}] {binary_remaining_bytes}/{binary_total_bytes}")
+        ProgressStyle::with_template(" downloading {binary_remaining_bytes}/{binary_total_bytes} [{wide_bar:.cyan/blue}] {msg}")
             .unwrap()
             .progress_chars("██░"),
     );
-    pb.set_message(" downloading".to_string());
     pb
 }
 
@@ -1029,7 +1028,7 @@ pub async fn show_download_progress(
         if rate > 0.0 {
             let remaining = total_size.saturating_sub(pos);
             let eta = Duration::from_secs_f64(remaining as f64 / rate);
-            op.set_message(format!(" downloading (~{} left)", HumanDuration(eta)));
+            op.set_message(format!("~{} left", HumanDuration(eta)));
         }
     }
     op.finish_and_clear();
