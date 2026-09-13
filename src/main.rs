@@ -233,6 +233,15 @@ pub struct SendArgs {
     #[clap(long)]
     pub nostop: bool,
 
+    /// Run the sender in the background; exits after the first
+    /// complete transfer. The ticket is printed and the shell is freed.
+    #[clap(long, conflicts_with = "bg")]
+    pub bg_stop: bool,
+
+    /// Run the sender in the background forever (until killed manually).
+    #[clap(long)]
+    pub bg: bool,
+
     /// Show debug details: content hash, per-file listing, import speed.
     #[clap(long)]
     pub debug: bool,
@@ -724,7 +733,75 @@ async fn show_provide_progress(
     Ok(())
 }
 
+/// Spawn a detached background sender, wait for it to produce its ticket,
+/// print it, then return (freeing the shell).
+async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+
+    let suffix = SecretKey::generate().to_bytes();
+    let ticket_file = std::env::temp_dir().join(format!("dashe-ticket-{}.txt", hex::encode(&suffix[..8])));
+    let _ = std::fs::remove_file(&ticket_file);
+
+    let mut cmd = Command::new(std::env::current_exe()?
+    );
+    cmd.args(std::env::args_os().skip(1))
+        .env("DASHE_DAEMON", "1")
+        .env("DASHE_TICKET_FILE", &ticket_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().context("failed to start background sender")?;
+    let pid = child.id();
+
+    // Wait for the worker to finish importing and write its ticket.
+    let deadline = Instant::now() + Duration::from_secs(60 * 30);
+    let ticket = loop {
+        if let Ok(content) = std::fs::read_to_string(&ticket_file) {
+            let t = content.trim().to_string();
+            if !t.is_empty() {
+                break t;
+            }
+        }
+        if child.try_wait()?.is_some() {
+            anyhow::bail!("background sender exited before sharing (bad path or setup failure)");
+        }
+        if Instant::now() > deadline {
+            anyhow::bail!("timed out waiting for the background sender");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+
+    println!(
+        "{}",
+        style(format!("dshe receive {ticket}")).bold(),
+    );
+    let mode = if args.bg_stop {
+        "stops automatically after the first transfer"
+    } else {
+        "stops when killed"
+    };
+    println!(
+        "{}",
+        style(format!("running in background (pid {pid}, {mode}; stop with: kill {pid}))")).dim(),
+    );
+    Ok(())
+}
+
 async fn send(args: SendArgs) -> anyhow::Result<()> {
+    // Background mode: the first invocation spawns a detached worker and
+    // waits for it to write its ticket, prints it, then frees the shell.
+    // The worker re-runs this same function with DASHE_DAEMON set.
+    if (args.bg || args.bg_stop) && std::env::var("DASHE_DAEMON").is_err() {
+        return spawn_background(args).await;
+    }
+    #[cfg(all(unix, feature = "clipboard"))]
+    if (args.bg || args.bg_stop) && std::env::var("DASHE_DAEMON").is_ok() {
+        // Detach from the controlling terminal so closing it doesn't kill us.
+        unsafe {
+            let _ = libc::setsid();
+        }
+    }
+
     let secret_key = get_or_create_secret(args.common.verbose > 0)?;
     if args.common.show_secret {
         let secret_key = hex::encode(secret_key.to_bytes());
@@ -894,14 +971,19 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
         style(format!("receive {ticket}")).bold(),
     );
 
+    // Hand the ticket to the foreground process that spawned us.
+    if let Ok(ticket_file) = std::env::var("DASHE_TICKET_FILE") {
+        let _ = std::fs::write(&ticket_file, ticket.to_string());
+    }
+
     #[cfg(feature = "clipboard")]
     handle_key_press(args.clipboard, ticket);
 
     // Exit after the first complete transfer, or on Ctrl-C.
-    // With --nostop the sender keeps running until Ctrl-C.
+    // With --nostop or --bg the sender keeps running until killed manually.
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {},
-        _ = done_rx.recv(), if !args.nostop => {
+        _ = done_rx.recv(), if !args.nostop && !args.bg => {
             println!("{}", style("transfer complete").green());
         }
     }
