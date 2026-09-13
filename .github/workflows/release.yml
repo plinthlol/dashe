@@ -75,7 +75,7 @@ jobs:
           echo "building dashe $version"
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target.rust_target }}
+        run: cargo build --release --target ${{ matrix.target.rust_target }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
