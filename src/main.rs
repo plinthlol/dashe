@@ -972,7 +972,7 @@ fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{msg} [{wide_bar:.cyan/blue}] {remaining_bytes}/{total_bytes} ({eta})")
+        ProgressStyle::with_template("{msg} [{wide_bar:.cyan/blue}] {binary_remaining_bytes}/{binary_total_bytes}")
             .unwrap()
             .progress_chars("██░"),
     );
@@ -1012,8 +1012,25 @@ pub async fn show_download_progress(
 ) -> anyhow::Result<()> {
     let op = mp.add(make_download_progress());
     op.set_length(total_size);
+    let started = Instant::now();
+    let mut last = (local_size, started);
+    let mut rate: f64 = 0.0;
     while let Some(offset) = recv.recv().await {
-        op.set_position(local_size + offset);
+        let pos = (local_size + offset).min(total_size);
+        op.set_position(pos);
+        // Estimate the transfer rate and show a humanized ETA in the message.
+        let now = Instant::now();
+        let dt = now.duration_since(last.1).as_secs_f64();
+        if dt >= 0.5 {
+            let inst = (pos.saturating_sub(last.0)) as f64 / dt;
+            rate = if rate == 0.0 { inst } else { rate * 0.7 + inst * 0.3 };
+            last = (pos, now);
+        }
+        if rate > 0.0 {
+            let remaining = total_size.saturating_sub(pos);
+            let eta = Duration::from_secs_f64(remaining as f64 / rate);
+            op.set_message(format!(" downloading (~{} left)", HumanDuration(eta)));
+        }
     }
     op.finish_and_clear();
     Ok(())
