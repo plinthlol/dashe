@@ -4,10 +4,10 @@ on:
   push:
     branches:
       # This helps fill the caches properly, caches are not shared between PRs.
-      - main
+      - cli
   pull_request:
     branches:
-      - main
+      - cli
 
 env:
   MSRV: "1.91"
