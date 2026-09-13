@@ -959,47 +959,24 @@ fn make_import_item_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{msg}{spinner:.green} XXXX [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}")
+        ProgressStyle::with_template("{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}")
             .unwrap()
             .progress_chars("#>-"),
     );
     pb
 }
 
-fn make_connect_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.set_style(
-        ProgressStyle::with_template("{prefix}{spinner:.green} Connecting ... [{elapsed_precise}]")
-            .unwrap(),
-    );
-    pb.set_prefix(format!("{} ", style("[1/4]").bold().dim()));
-    pb.enable_steady_tick(Duration::from_millis(TICK_MS));
-    pb
-}
 
-fn make_get_sizes_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{prefix}{spinner:.green} Getting sizes... [{elapsed_precise}]",
-        )
-        .unwrap(),
-    );
-    pb.set_prefix(format!("{} ", style("[2/4]").bold().dim()));
-    pb.enable_steady_tick(Duration::from_millis(TICK_MS));
-    pb
-}
 
 fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{prefix}{spinner:.green}{msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec}")
+        ProgressStyle::with_template("{spinner:.green}{msg} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} {binary_bytes_per_sec}")
             .unwrap()
             .progress_chars("#>-"),
     );
-    pb.set_prefix(format!("{} ", style("[3/4]").bold().dim()));
-    pb.set_message("Downloading ...".to_string());
+    pb.set_message(" downloading".to_string());
     pb
 }
 
@@ -1007,11 +984,10 @@ fn make_export_overall_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{prefix}{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {human_pos}/{human_len} {per_sec}")
+        ProgressStyle::with_template("{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {human_pos}/{human_len} {per_sec}")
             .unwrap()
             .progress_chars("#>-"),
     );
-    pb.set_prefix(format!("{}", style("[4/4]").bold().dim()));
     pb
 }
 
@@ -1114,15 +1090,11 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         trace!("local done");
         let (stats, total_files, payload_size) = if !local.is_complete() {
             trace!("{} not complete", hash_and_format.hash);
-            let cp = mp.add(make_connect_progress());
             let connection = endpoint.connect(addr, iroh_blobs::protocol::ALPN).await?;
-            cp.finish_and_clear();
-            let sp = mp.add(make_get_sizes_progress());
             let (_hash_seq, sizes) =
                 get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32, None)
                     .await
                     .map_err(show_get_error)?;
-            sp.finish_and_clear();
             let total_size = sizes.iter().copied().sum::<u64>();
             let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
             let total_files = (sizes.len().saturating_sub(1)) as u64;
