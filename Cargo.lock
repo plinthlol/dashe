@@ -736,6 +736,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashe"
+version = "0.36.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "console",
+ "crossterm",
+ "data-encoding",
+ "derive_more",
+ "duct",
+ "futures-buffered",
+ "hex",
+ "indicatif",
+ "iroh",
+ "iroh-blobs",
+ "irpc",
+ "libc",
+ "n0-future",
+ "nix",
+ "num_cpus",
+ "rand",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "walkdir",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3505,38 +3537,6 @@ name = "send_wrapper"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
-
-[[package]]
-name = "sendme"
-version = "0.36.0"
-dependencies = [
- "anyhow",
- "clap",
- "console",
- "crossterm",
- "data-encoding",
- "derive_more",
- "duct",
- "futures-buffered",
- "hex",
- "indicatif",
- "iroh",
- "iroh-blobs",
- "irpc",
- "libc",
- "n0-future",
- "nix",
- "num_cpus",
- "rand",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "walkdir",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "serde"

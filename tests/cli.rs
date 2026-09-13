@@ -7,32 +7,32 @@ use std::{
 use iroh_blobs::ticket::BlobTicket;
 
 // binary path
-fn sendme_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_sendme")
+fn dshe_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_dshe")
 }
 
-/// Read `n` lines from `reader`, returning the bytes read including the newlines.
-///
-/// This assumes that the header lines are ASCII and can be parsed byte by byte.
-fn read_ascii_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>> {
+/// Read from `reader` until a line starting with `dshe receive` is found,
+/// returning the ticket that follows the command name.
+fn read_ticket(reader: &mut impl Read) -> io::Result<String> {
+    let mut line = Vec::new();
     let mut buf = [0u8; 1];
-    let mut res = Vec::new();
     loop {
         if reader.read(&mut buf)? != 1 {
-            break;
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ticket line not found in output",
+            ));
         }
-        let char = buf[0];
-        res.push(char);
-        if char != b'\n' {
-            continue;
-        }
-        if n > 1 {
-            n -= 1;
+        if buf[0] == b'\n' {
+            let text = String::from_utf8_lossy(&line).trim().to_string();
+            line.clear();
+            if let Some(ticket) = text.strip_prefix("dshe receive ") {
+                return Ok(ticket.trim().to_string());
+            }
         } else {
-            break;
+            line.push(buf[0]);
         }
     }
-    Ok(res)
 }
 
 // fn wait2() -> Arc<Barrier> {
@@ -54,7 +54,7 @@ fn send_recv_file() {
     let src_file = src_dir.path().join(name);
     std::fs::write(&src_file, &data).unwrap();
     let mut send_cmd = duct::cmd(
-        sendme_bin(),
+        dshe_bin(),
         ["send", src_file.as_os_str().to_str().unwrap()],
     )
     .dir(src_dir.path())
@@ -62,11 +62,9 @@ fn send_recv_file() {
     .stderr_to_stdout()
     .reader()
     .unwrap();
-    let output = read_ascii_lines(3, &mut send_cmd).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    let ticket = output.split_ascii_whitespace().last().unwrap();
-    let ticket = BlobTicket::from_str(ticket).unwrap();
-    let receive_output = duct::cmd(sendme_bin(), ["receive", &ticket.to_string()])
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+    let ticket = BlobTicket::from_str(&ticket).unwrap();
+    let receive_output = duct::cmd(dshe_bin(), ["receive", &ticket.to_string()])
         .dir(tgt_dir.path())
         .env_remove("RUST_LOG") // disable tracing
         .stderr_to_stdout()
@@ -87,7 +85,7 @@ fn receive_closes_endpoint_no_iroh_socket_error() {
     let src_file = src_dir.path().join(name);
     std::fs::write(&src_file, &data).unwrap();
     let mut send_cmd = duct::cmd(
-        sendme_bin(),
+        dshe_bin(),
         ["send", src_file.as_os_str().to_str().unwrap()],
     )
     .dir(src_dir.path())
@@ -95,11 +93,9 @@ fn receive_closes_endpoint_no_iroh_socket_error() {
     .stderr_to_stdout()
     .reader()
     .unwrap();
-    let output = read_ascii_lines(3, &mut send_cmd).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    let ticket = output.split_ascii_whitespace().last().unwrap();
-    let ticket = BlobTicket::from_str(ticket).unwrap();
-    let receive_output = duct::cmd(sendme_bin(), ["receive", &ticket.to_string()])
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+    let ticket = BlobTicket::from_str(&ticket).unwrap();
+    let receive_output = duct::cmd(dshe_bin(), ["receive", &ticket.to_string()])
         .dir(tgt_dir.path())
         .env("RUST_LOG", "iroh::socket=error")
         .stdout_capture()
@@ -148,7 +144,7 @@ fn send_recv_dir() {
         }
     }
     let mut send_cmd = duct::cmd(
-        sendme_bin(),
+        dshe_bin(),
         ["send", src_data_dir.as_os_str().to_str().unwrap()],
     )
     .dir(src_dir.path())
@@ -156,11 +152,9 @@ fn send_recv_dir() {
     .stderr_to_stdout()
     .reader()
     .unwrap();
-    let output = read_ascii_lines(3, &mut send_cmd).unwrap();
-    let output = String::from_utf8(output).unwrap();
-    let ticket = output.split_ascii_whitespace().last().unwrap();
-    let ticket = BlobTicket::from_str(ticket).unwrap();
-    let receive_output = duct::cmd(sendme_bin(), ["receive", &ticket.to_string()])
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+    let ticket = BlobTicket::from_str(&ticket).unwrap();
+    let receive_output = duct::cmd(dshe_bin(), ["receive", &ticket.to_string()])
         .dir(tgt_dir.path())
         .env_remove("RUST_LOG") // disable tracing
         .stderr_to_stdout()

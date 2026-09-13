@@ -63,7 +63,10 @@ use walkdir::WalkDir;
 #[command(version, about)]
 pub struct Args {
     #[clap(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+
+    /// A file or folder to send. Will ask for confirmation.
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +226,10 @@ pub struct SendArgs {
 
     #[clap(flatten)]
     pub common: CommonArgs,
+
+    /// Show debug details: content hash, per-file listing, import speed.
+    #[clap(long)]
+    pub debug: bool,
 
     /// Store the receive command in the clipboard.
     #[cfg(feature = "clipboard")]
@@ -399,18 +406,25 @@ async fn import(
         .filter_map(Result::transpose)
         .collect::<anyhow::Result<Vec<_>>>()?;
     // import all the files, using num_cpus workers, return names and temp tags
-    let op = mp.add(make_import_overall_progress());
-    op.set_message(format!("importing {} files", data_sources.len()));
-    op.set_length(data_sources.len() as u64);
+    // Only show an overall bar when there are multiple files. For a single
+    // file it would just flash in and out.
+    let op = if data_sources.len() > 1 {
+        let op = mp.add(make_import_overall_progress());
+        op.set_message(format!("importing {} files", data_sources.len()));
+        op.set_length(data_sources.len() as u64);
+        Some(op)
+    } else {
+        None
+    };
     let mut names_and_tags = n0_future::stream::iter(data_sources)
         .map(|(name, path)| {
             let db = db.clone();
             let op = op.clone();
             let mp = mp.clone();
             async move {
-                op.inc(1);
-                let pb = mp.add(make_import_item_progress());
-                pb.set_message(format!("copying {name}"));
+                if let Some(op) = &op {
+                    op.inc(1);
+                }
                 let import = db.add_path_with_opts(AddPathOptions {
                     path,
                     mode: ImportMode::TryReference,
@@ -418,6 +432,9 @@ async fn import(
                 });
                 let mut stream = import.stream().await;
                 let mut item_size = 0;
+                // Only show a per-file bar for larger files; small ones finish
+                // so fast the bar would just flash.
+                let mut pb: Option<ProgressBar> = None;
                 let temp_tag = loop {
                     let item = stream
                         .next()
@@ -427,24 +444,39 @@ async fn import(
                     match item {
                         AddProgressItem::Size(size) => {
                             item_size = size;
-                            pb.set_length(size);
+                            if size > MIN_IMPORT_BAR_BYTES {
+                                let bar = mp.add(make_import_item_progress());
+                                bar.set_message(format!("copying {name}"));
+                                bar.set_length(size);
+                                pb = Some(bar);
+                            }
                         }
                         AddProgressItem::CopyProgress(offset) => {
-                            pb.set_position(offset);
+                            if let Some(pb) = &pb {
+                                pb.set_position(offset);
+                            }
                         }
                         AddProgressItem::CopyDone => {
-                            pb.set_message(format!("computing outboard {name}"));
-                            pb.set_position(0);
+                            if let Some(pb) = &pb {
+                                pb.set_message(format!("computing outboard {name}"));
+                                pb.set_position(0);
+                            }
                         }
                         AddProgressItem::OutboardProgress(offset) => {
-                            pb.set_position(offset);
+                            if let Some(pb) = &pb {
+                                pb.set_position(offset);
+                            }
                         }
                         AddProgressItem::Error(cause) => {
-                            pb.finish_and_clear();
+                            if let Some(pb) = &pb {
+                                pb.finish_and_clear();
+                            }
                             anyhow::bail!("error importing {}: {}", name, cause);
                         }
                         AddProgressItem::Done(tt) => {
-                            pb.finish_and_clear();
+                            if let Some(pb) = &pb {
+                                pb.finish_and_clear();
+                            }
                             break tt;
                         }
                     }
@@ -457,7 +489,9 @@ async fn import(
         .await
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
-    op.finish_and_clear();
+    if let Some(op) = &op {
+        op.finish_and_clear();
+    }
     names_and_tags.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
     // total size of all files
     let size = names_and_tags.iter().map(|(_, _, size)| *size).sum::<u64>();
@@ -670,7 +704,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     // use a flat store - todo: use a partial in mem store instead
     let suffix = rand::rng().random::<[u8; 16]>();
     let cwd = std::env::current_dir()?;
-    let blobs_data_dir = cwd.join(format!(".sendme-send-{}", HEXLOWER.encode(&suffix)));
+    let blobs_data_dir = cwd.join(format!(".dashe-send-{}", HEXLOWER.encode(&suffix)));
     if blobs_data_dir.exists() {
         println!(
             "can not share twice from the same directory: {}",
@@ -751,25 +785,33 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
     let entry_type = if path.is_file() { "file" } else { "directory" };
     println!(
-        "imported {} {}, {}, hash {}",
+        "imported {} {} ({})",
         entry_type,
-        path.display(),
+        style(path.display()).bold(),
         HumanBytes(size),
-        print_hash(&hash, args.common.format),
     );
-    if args.common.verbose > 1 {
+    if args.debug || args.common.verbose > 1 {
+        println!(
+            "  {} {}",
+            style("hash").dim(),
+            print_hash(&hash, args.common.format),
+        );
         for (name, hash) in collection.iter() {
             println!("    {} {name}", print_hash(hash, args.common.format));
         }
         println!(
-            "{}s, {}/s",
+            "  imported in {}s, {}/s",
             dt.as_secs_f64(),
             HumanBytes(((size as f64) / dt.as_secs_f64()).floor() as u64)
         );
     }
 
-    println!("to get this data, use");
-    println!("sendme receive {ticket}");
+    println!();
+    println!(
+        "  {} {}",
+        style("dshe").bold().cyan(),
+        style(format!("receive {ticket}")).bold(),
+    );
 
     #[cfg(feature = "clipboard")]
     handle_key_press(args.clipboard, ticket);
@@ -815,7 +857,7 @@ fn handle_key_press(set_clipboard: bool, ticket: BlobTicket) {
     }
 
     let _keyboard = tokio::task::spawn(async move {
-        println!("press c to copy command to clipboard, or use the --clipboard argument");
+        println!("{}", style("press c to copy the receive command").dim());
 
         // `enable_raw_mode` will remember the current terminal mode
         // and restore it when `disable_raw_mode` is called.
@@ -871,12 +913,16 @@ fn add_to_clipboard(ticket: &BlobTicket) {
 
     execute!(
         stdout(),
-        CopyToClipboard::to_clipboard_from(format!("sendme receive {ticket}"))
+        CopyToClipboard::to_clipboard_from(format!("dshe receive {ticket}"))
     )
     .unwrap_or_else(|e| eprintln!("Failed to copy to clipboard: {e}"));
 }
 
 const TICK_MS: u64 = 250;
+
+/// Files smaller than this don't get their own import progress bar —
+/// they finish too fast and the bar just flashes.
+const MIN_IMPORT_BAR_BYTES: u64 = 8 * 1024 * 1024;
 
 fn make_import_overall_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
@@ -1030,7 +1076,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         builder = builder.bind_addr(addr)?;
     }
     let endpoint = builder.bind().await?;
-    let dir_name = format!(".sendme-recv-{}", ticket.hash().to_hex());
+    let dir_name = format!(".dashe-recv-{}", ticket.hash().to_hex());
     let iroh_data_dir = std::env::current_dir()?.join(dir_name);
     let db = iroh_blobs::store::fs::FsStore::load(&iroh_data_dir).await?;
     let db2 = db.clone();
@@ -1060,13 +1106,20 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                     .map_err(show_get_error)?;
             sp.finish_and_clear();
             let total_size = sizes.iter().copied().sum::<u64>();
-            let payload_size = sizes.iter().skip(2).copied().sum::<u64>();
+            let payload_size = sizes.iter().skip(1).copied().sum::<u64>();
             let total_files = (sizes.len().saturating_sub(1)) as u64;
+            let noun = if total_files == 1 { "file" } else { "files" };
             eprintln!(
-                "getting collection {} {} files, {}",
-                print_hash(&ticket.hash(), args.common.format),
+                "{} fetching {} {} ({})",
+                style(console::Emoji("⇣", "<")).cyan(),
                 total_files,
-                HumanBytes(payload_size)
+                noun,
+                HumanBytes(payload_size),
+            );
+            eprintln!(
+                "  {} {}",
+                style("from").dim(),
+                print_hash(&ticket.hash(), args.common.format),
             );
             // print the details of the collection only in verbose mode
             if args.common.verbose > 0 {
@@ -1120,7 +1173,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         }
         if let Some((name, _)) = collection.iter().next() {
             if let Some(first) = name.split('/').next() {
-                println!("exporting to {first}");
+                println!("{} exporting to {}", style(console::Emoji("→", ">")).cyan(), style(first).bold());
             }
         }
         export(&db, collection, &mut mp).await?;
@@ -1147,6 +1200,15 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         }
     };
     tokio::fs::remove_dir_all(iroh_data_dir).await?;
+    let noun = if total_files == 1 { "file" } else { "files" };
+    println!(
+        "{} received {} {} ({}) in {}",
+        style(console::Emoji("✔", "v")).green(),
+        total_files,
+        noun,
+        HumanBytes(payload_size),
+        HumanDuration(stats.elapsed),
+    );
     if args.common.verbose > 0 {
         println!(
             "downloaded {} files, {}. took {} ({}/s)",
@@ -1157,6 +1219,55 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// Ask the user whether to send the given path. Returns true for y/yes.
+/// In an interactive terminal, a single keypress is enough (no Enter).
+fn confirm_send(path: &Path) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        path.exists(),
+        "path {} does not exist",
+        path.display(),
+    );
+    use std::io::{IsTerminal, Read, Write as _};
+    print!("send {}? [y/N] ", path.display());
+    std::io::stdout().flush()?;
+    let answer = if std::io::stdin().is_terminal() {
+        // Single keypress, no Enter needed.
+        #[cfg(feature = "clipboard")]
+        {
+            use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+            enable_raw_mode()?;
+            let mut buf = [0u8; 1];
+            let n = std::io::stdin().read(&mut buf)?;
+            disable_raw_mode()?;
+            // Echo the pressed key since raw mode does not.
+            if n == 1 && buf[0].is_ascii_graphic() {
+                print!("{}\n", buf[0] as char);
+            } else {
+                println!();
+            }
+            std::io::stdout().flush()?;
+            if n == 1 && buf[0] == 3 {
+                // Ctrl-C in raw mode is just a byte; honor it as an interrupt.
+                std::process::exit(130);
+            }
+            n == 1 && (buf[0] == b'y' || buf[0] == b'Y')
+        }
+        #[cfg(not(feature = "clipboard"))]
+        {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            let answer = line.trim().to_ascii_lowercase();
+            answer == "y" || answer == "yes"
+        }
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        let answer = line.trim().to_ascii_lowercase();
+        answer == "y" || answer == "yes"
+    };
+    Ok(answer)
 }
 
 #[tokio::main]
@@ -1177,7 +1288,26 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-    let res = match args.command {
+    let command = match args.command {
+        Some(command) => command,
+        None => {
+            let Some(path) = args.path else {
+                Args::command().print_help()?;
+                std::process::exit(2);
+            };
+            if !confirm_send(&path)? {
+                println!("aborted");
+                std::process::exit(0);
+            }
+            // Re-parse through clap so the defaults are applied.
+            let path_str = path.as_os_str().to_str().context("invalid path")?;
+            Commands::Send(SendArgs::try_parse_from([
+                "dshe",
+                path_str,
+            ])?)
+        }
+    };
+    let res = match command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
     };
