@@ -64,6 +64,16 @@ jobs:
         if: contains(matrix.target.rust_target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      - name: Sync version with tag
+        if: github.ref_type == 'tag' || github.event.inputs.release_version != ''
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.release_version || github.ref_name }}"
+          version="${version#v}"
+          sed -i.bak "s/^version = \".*\"/version = \"$version\"/" Cargo.toml && rm -f Cargo.toml.bak
+          cargo update -p dashe
+          echo "building dashe $version"
+
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target.rust_target }}
 
