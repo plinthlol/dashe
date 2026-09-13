@@ -1028,7 +1028,7 @@ pub async fn show_download_progress(
         if rate > 0.0 {
             let remaining = total_size.saturating_sub(pos);
             let eta = Duration::from_secs_f64(remaining as f64 / rate);
-            op.set_message(format!("~{} left", HumanDuration(eta)));
+            op.set_message(format!("({} left)", HumanDuration(eta)));
         }
     }
     op.finish_and_clear();
