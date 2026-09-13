@@ -15,6 +15,11 @@
 # https://github.com/crate-ci/cargo-release/blob/91549dbf9db9915ba5f121890ad0816c7d851679/.github/workflows/post-release.yml
 
 name: release
+
+# Needed to create the GitHub release and upload assets.
+permissions:
+  contents: write
+
 on:
   push:
     tags:
