@@ -1,0 +1,1699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orca</title>
+<link rel="icon" href="data:,">
+<style>
+  :root{
+    --panel-2:#181b23;
+    --row:#1b1e27;
+    --row-hover:#22262f;
+    --accent:#3b7cf6;
+    --accent-mid:#3370e6;
+    --text:#e7e9ee;
+    --text-dim:#9aa3b2;
+    --text-faint:#6b7482;
+    --border:rgba(255,255,255,0.06);
+    --elev:#1c1f28;    /* menus, tooltips, popovers */
+    --window-bg:#0b0c10;
+    --scroll:#2a2e38;
+    --switch-off:#33363f;
+    --control-bg:#14171d;      /* recessed inset, neutral */
+    --control-hover:#1a1e26;
+    --control-border:rgba(255,255,255,0.10);
+    --row-h:3rem;         /* height of one .module-row */
+    --row-gap:0.375rem;   /* gap between module rows */
+    --visible-rows:5;  /* how many rows should fit before scrolling kicks in */
+    --gui-width:45rem; /* overall window width - shrinks the content/settings side, sidebar stays fixed */
+    --gui-scale:1.05;  /* global UI scale — everything is rem-based, so this grows/shrinks the whole GUI proportionally */
+    --row-radius:0.5625rem;
+    --window-radius:0.75rem;
+  }
+  /* light mode palette — accents are untouched */
+  html.light{
+    --panel-2:#e9edf4;
+    --row:#e7ebf2;
+    --row-hover:#dde3ec;
+    --text:#191d25;
+    --text-dim:#5a6372;
+    --text-faint:#7d8695;
+    --border:rgba(0,0,0,0.09);
+    --elev:#ffffff;
+    --window-bg:#f4f6fa;
+    --scroll:#c3ccd8;
+    --switch-off:#c9d1dc;
+    --control-bg:#dfe3ea;
+    --control-hover:#d6dce5;
+    --control-border:rgba(0,0,0,0.14);
+  }
+  *{box-sizing:border-box;}
+  *, *::before, *::after{ cursor:default !important; }
+  html{ font-size:calc(100% * var(--gui-scale)); }
+  html,body{margin:0;height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;}
+  input, select, button, textarea{ font:inherit; color:inherit; }
+  body{
+    background-image:url('img.png');
+    background-size:cover;
+    background-position:center;
+    background-repeat:no-repeat;
+    min-height:100vh;
+    overflow:hidden;
+    color:var(--text);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+
+  /* ---------- CLICKGUI ---------- */
+  #clickgui{
+    position:fixed; inset:0;
+    display:flex;
+    align-items:center; justify-content:center;
+    padding-bottom:9vh; /* pushes the window slightly above center */
+    background:rgba(0,0,0,0);
+    z-index:50;
+    opacity:0; visibility:hidden; pointer-events:none;
+    transition:opacity .22s ease, visibility 0s linear .22s;
+  }
+  #clickgui.open{
+    opacity:1; visibility:visible; pointer-events:auto;
+    transition:opacity .22s ease, visibility 0s linear 0s;
+  }
+
+  .gui-window{
+    width:var(--gui-width); max-width:88vw; height:auto; max-height:82vh;
+    background:var(--window-bg);
+    border:0.0625rem solid rgba(255,255,255,.07);
+    border-radius:var(--window-radius);
+    display:flex; flex-direction:column;
+    overflow:hidden;
+    transform:scale(.94) translateY(0.5rem);
+    opacity:0;
+    transition:transform .28s cubic-bezier(.22,1,.36,1), opacity .22s ease;
+  }
+  #clickgui.open .gui-window{
+    transform:scale(1) translateY(0);
+    opacity:1;
+  }
+
+  .gui-tabs{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0.5rem 1rem; gap:0.625rem;
+    border-bottom:0.0625rem solid var(--border);
+    user-select:none; touch-action:none; -webkit-user-drag:none;
+  }
+  .gui-window.dragging{ transition:none !important; }
+  .tabs-left{ display:flex; gap:0.4375rem; }
+  .tabs-right{ display:flex; gap:0.4375rem; }
+  .tab-btn{
+    display:flex; align-items:center; gap:0.4375rem;
+    background:transparent; color:var(--text-dim);
+    border:none; border-radius:0.5rem; padding:0.4375rem 0.8125rem;
+    font-size:0.875rem; font-weight:600;
+    transition:background .15s ease, color .15s ease, outline .12s ease;
+  }
+  .tab-btn:hover{ background:var(--row-hover); color:var(--text); }
+  .tab-btn.active{ background:var(--panel-2); color:var(--text); }
+  .tab-btn.drop-hover{
+    outline:0.125rem dashed var(--accent); outline-offset:0.125rem;
+    background:var(--row-hover); color:var(--text);
+  }
+  .sword-icon{ width:1em; height:1em; flex-shrink:0; }
+  .tab-btn svg{ width:1em; height:1em; flex-shrink:0; }
+  .icon-btn svg{ width:0.9375rem; height:0.9375rem; }
+  .icon-btn{
+    width:2rem;height:2rem; display:flex;align-items:center;justify-content:center;
+    background:transparent; border:none; border-radius:0.5rem; color:var(--text-dim);
+    position:relative;
+    transition:background .15s ease,color .15s ease;
+  }
+  .icon-btn:hover{ background:var(--row-hover); color:var(--text); }
+
+  .gui-body{
+    display:flex; min-height:16.75rem; /* floor = sidebar's 5 category items (Modules tab) */
+    height:auto; /* fully dynamic: the content always defines the window height */
+  }
+  /* sidebar is hidden here (search/favorites/…) → no need to reserve its height */
+  .gui-body.no-sidebar{ min-height:0; }
+  /* module lists: cap the visible rows at --visible-rows and scroll beyond that */
+  .gui-body.module-list .content{
+    max-height:calc(var(--visible-rows) * var(--row-h) + (var(--visible-rows) - 1) * var(--row-gap) + 2.25rem);
+  }
+  /* compact screens (settings/configs/gui): height always follows content */
+  .gui-body.auto-height{ height:auto; min-height:0; }
+  .sidebar{
+    width:9.5rem; flex-shrink:0; padding:1rem 0.125rem 1rem 0.5rem;
+  }
+  .cat-item{
+    padding:0.5625rem 0.75rem; margin-bottom:0.1875rem; border-radius:0.5rem;
+    font-size:0.984rem; font-weight:600; color:var(--text-faint);
+    position:relative;
+    transition:color .18s ease;
+  }
+  .cat-item:hover{ color:var(--text-dim); }
+  .cat-item.active{ color:var(--text); }
+  .cat-item.active::after{
+    content:''; position:absolute; left:1rem; bottom:-0.125rem; width:1.375rem; height:0.125rem;
+    background:var(--accent); border-radius:0.125rem;
+    animation:underlineIn .2s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes underlineIn{ from{ width:0; opacity:0;} to{ width:1.375rem; opacity:1;} }
+
+  .content{
+    flex:1; padding:1rem 1rem 1rem 0.125rem; overflow-y:auto; min-width:13rem;
+    scrollbar-width:thin; scrollbar-color:var(--scroll) transparent;
+  }
+  .gui-body.settings-open .content{ padding:1rem 0.4375rem 1rem 0.125rem; } /* vertical + tight left stay — right squeezed to half */
+  /* when the sidebar is hidden (search/favorites), restore a normal left padding */
+  .gui-body.no-sidebar .content{ padding-left:1rem; }
+  @keyframes contentFadeIn{ from{ opacity:0; transform:translateY(0.3125rem);} to{ opacity:1; transform:translateY(0);} }
+  .content-anim{ animation:contentFadeIn .22s cubic-bezier(.22,1,.36,1); }
+  .content::-webkit-scrollbar{ width:0.5rem; }
+  .content::-webkit-scrollbar-track{ margin:0.625rem 0; background:transparent; }
+  .content::-webkit-scrollbar-thumb{ background:var(--scroll); border-radius:0.375rem; background-clip:padding-box; border:0.125rem solid transparent; }
+  .content.drop-hover{ outline:0.125rem dashed var(--accent); outline-offset:-0.25rem; border-radius:0.5rem; }
+
+  .module-row{
+    display:flex; align-items:center; gap:0.75rem;
+    background:var(--row); border-radius:var(--row-radius);
+    min-height:var(--row-h); /* pinned so the row never gets shorter than the height the .content formula was sized for */
+    padding:0.625rem 0.75rem; margin-bottom:var(--row-gap);
+    transition:background .12s ease, opacity .12s ease;
+  }
+  .module-row:hover{ background:var(--row-hover); }
+  .module-row.enabled{ background:var(--accent-mid); }
+  .module-row.enabled:hover{ filter:brightness(1.05); }
+  .module-row.dragging-row{ opacity:.35; }
+  .mod-icon{
+    width:1.5rem;height:1.5rem; flex-shrink:0; display:flex;align-items:center;justify-content:center;
+    color:var(--text-dim);
+  }
+  .mod-icon svg{ width:1.0625rem; height:1.0625rem; }
+  .module-row.enabled .mod-icon{ color:rgba(255,255,255,.9); }
+  .mod-text{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; }
+  .mod-name{ font-size:1.1875rem; font-weight:700; margin-right:0.5625rem; }
+  .mod-desc{ font-size:0.9375rem; color:var(--text-dim); transition:opacity .15s ease .12s; } /* fades back in with a small delay after closing */
+  .gui-body.settings-open .mod-desc{ opacity:0; transition:opacity .1s ease; } /* fade out fast, before the squeeze */
+  .module-row.enabled .mod-desc{ color:rgba(255,255,255,.8); }
+  .module-row:last-child{ margin-bottom:0; }
+  /* keybind badge on a module row */
+  .mod-bind{
+    flex-shrink:0; font-size:0.75rem; font-weight:700; color:var(--text-dim); font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;
+  }
+  .module-row.enabled .mod-bind{ color:rgba(255,255,255,.85); }
+  /* favorite star + source tag in search results */
+  .fav-mark{ width:0.875rem; height:0.875rem; flex-shrink:0; color:var(--text-faint); }
+  /* keybind capture overlay */
+  .bind-overlay{
+    position:fixed; inset:0; z-index:100;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.45);
+  }
+  .bind-box{
+    background:var(--elev); border:0.0625rem solid var(--border); border-radius:0.5rem;
+    padding:1rem 1.5rem; text-align:center;
+    
+  }
+  .bind-box .bind-title{ font-weight:700; font-size:1.1875rem; margin-bottom:0.375rem; }
+  .bind-box .bind-hint{ font-size:0.875rem; color:var(--text-dim); }
+
+  .switch{
+    width:1.125rem; height:1.125rem; border-radius:0.25rem; background:var(--switch-off);
+    flex-shrink:0;
+    transition:background .15s ease;
+  }
+  .switch.on{ background:var(--accent); }
+
+  .ctx-menu{
+    display:none;
+    position:absolute; top:2.125rem; right:0; z-index:30;
+    background:var(--elev); border:0.0625rem solid var(--border); border-radius:0.5rem;
+    padding:0.4375rem; min-width:11.125rem;
+    opacity:0; transform:translateY(-0.25rem) scale(.97); pointer-events:none;
+    transition:opacity .14s ease, transform .14s ease;
+  }
+  .ctx-menu.show{ display:block; opacity:1; transform:translateY(0) scale(1); pointer-events:auto; }
+  .ctx-item{
+    padding:0.5625rem 0.6875rem; font-size:0.875rem; border-radius:0.375rem; color:var(--text);
+  }
+  .ctx-item:hover{ background:var(--row-hover); }
+
+  .empty-state{
+    color:var(--text-faint); font-size:0.9375rem; text-align:center; margin-top:3rem;
+  }
+
+  /* inline search: replaces the tabs inside the bar when active */
+  .tab-search{
+    display:none; flex:1; align-items:center; gap:0.5rem;
+    background:var(--row); border-radius:0.5rem;
+    padding:0.375rem 0.6875rem; min-width:0;
+  }
+  .tab-search svg{ width:1rem; height:1rem; color:var(--text-faint); flex-shrink:0; }
+  .tab-search input{
+    flex:1; min-width:0; background:transparent; border:none; outline:none;
+    color:var(--text); font-size:0.9375rem;
+  }
+  .tab-search input::placeholder{ color:var(--text-faint); }
+  .gui-tabs.searching .tabs-right{ display:none; }
+  .gui-tabs.searching .tab-search{ display:flex; }
+  .search-clear{
+    width:1.5rem; height:1.5rem; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    border:none; background:transparent; color:var(--text-faint);
+    border-radius:0.25rem;
+    transition:background .12s ease, color .12s ease;
+  }
+  .search-clear:hover{ background:var(--row-hover); color:var(--text); }
+  .search-clear svg{ width:0.875rem; height:0.875rem; }
+  .search-count{ font-size:0.75rem; font-weight:600; color:var(--text-faint); margin-bottom:0.5rem; }
+  /* tooltips */
+  #tooltip{
+    position:fixed; z-index:200; max-width:16rem; display:none;
+    background:var(--elev); border:0.0625rem solid var(--border); border-radius:0.375rem;
+    padding:0.4375rem 0.625rem; font-size:0.75rem; font-weight:600; color:var(--text);
+    pointer-events:none; white-space:pre-line;
+  }
+  #tooltip.show{ display:block; }
+  /* square corners mode — nukes every radius (pseudo-elements like slider thumbs keep their shape) */
+  html.square-corners *{ border-radius:0 !important; }
+  html.square-corners input[type=color],
+  html.square-corners input[type=color]::-webkit-color-swatch-wrapper,
+  html.square-corners input[type=color]::-webkit-color-swatch{ border-radius:0 !important; }
+  /* minimal keybind value — plain text, click to rebind */
+  .bind-value{
+    border:none; background:transparent; color:var(--text); font:inherit;
+    font-size:0.75rem; font-weight:800; font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;
+    font-variant-numeric:tabular-nums;
+    padding:0.1875rem 0.4375rem; border-radius:0.25rem;
+    transition:background .12s ease, color .12s ease;
+  }
+  .bind-value:hover{ background:var(--row); }
+  .bind-value.listening{ color:var(--text-faint); background:var(--row); }
+
+  /* settings sub-panel */
+  .settings-panel{ display:flex; flex-direction:column; min-height:100%; }
+
+  /* ---------- third panel: settings drawer ---------- */
+  .settings-drawer{
+    width:21rem; flex-shrink:0; overflow:hidden;
+    margin-right:-21rem; /* collapsed by default: zero footprint, no layout animation */
+    transform:translateX(100%);
+    transition:transform .22s cubic-bezier(.33,1,.68,1);
+  }
+  /* a closed drawer must contribute zero height to the flex body (managed via JS) */
+  .settings-drawer.open{ margin-right:0; transform:translateX(0); }
+  .settings-drawer-inner{
+    width:21rem; height:100%; padding:0.875rem 1rem; overflow-y:auto;
+    scrollbar-width:thin; scrollbar-color:var(--scroll) transparent;
+  }
+  .settings-drawer-inner::-webkit-scrollbar{ width:0.5rem; }
+  .settings-drawer-inner::-webkit-scrollbar-track{ margin:0.625rem 0; background:transparent; }
+  .settings-drawer-inner::-webkit-scrollbar-thumb{ background:var(--scroll); border-radius:0.375rem; background-clip:padding-box; border:0.125rem solid transparent; }
+  .settings-header{
+    display:flex; align-items:center; gap:0.625rem;
+    padding:0.125rem 0 0.75rem;
+    font-size:1.1875rem; font-weight:700; color:var(--text);
+  }
+  .settings-header .back-arrow{
+    width:1.625rem;height:1.625rem; border-radius:0.375rem; display:flex;align-items:center;justify-content:center;
+    color:var(--text-dim);
+  }
+  .settings-header .back-arrow svg{ width:0.9375rem; height:0.9375rem; }
+  .settings-header:hover .back-arrow{ color:var(--text); }
+
+  /* ---- drawer widgets: flat editorial style, no cards ---- */
+  /* drawer fields: one continuous list, hairline divider between entries.
+     No cards, no floating boxes — label left, control right or below. */
+  .field{
+    padding:0.75rem 0;
+  }
+  .field:last-child{ padding-bottom:0.25rem; }
+  .field.inline{
+    display:flex; align-items:center; justify-content:space-between; gap:1rem;
+  }
+  .field.inline .field-label{ margin-bottom:0; }
+  .field.inline .dd{ width:10.5rem; flex-shrink:0; }
+  .field-label{
+    font-size:0.875rem; font-weight:600; color:var(--text);
+    margin-bottom:0.5rem;
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .field.inline .field-label, .toggle-row .field-label{ margin-bottom:0; }
+  .field-label .val{ color:var(--text-dim); font-weight:600; font-variant-numeric:tabular-nums; }
+  /* editable value for sliders — flat text, no box */
+  .num-input{
+    width:2.75rem; background:transparent; border:none; border-radius:0.25rem;
+    color:var(--text); font:inherit; font-size:0.75rem; font-weight:700; font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;
+    padding:0.1875rem 0.3125rem; text-align:center; outline:none;
+    font-variant-numeric:tabular-nums;
+    transition:background .12s ease;
+  }
+  .num-input::-webkit-outer-spin-button, .num-input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  .num-input:hover{ background:var(--row); }
+  .num-input:focus{ background:var(--row); }
+  .range-nums{ display:flex; align-items:center; gap:0.25rem; }
+  .range-nums .num-input{ width:2.25rem; }
+  .range-sep{ color:var(--text-faint); font-weight:700; }
+
+  /* custom dropdown — value pill + popover menu */
+  .dd{ position:relative; }
+  .dd-toggle{
+    width:100%; display:flex; align-items:center; justify-content:space-between; gap:0.5rem;
+    border:none; background:var(--control-bg); color:var(--text);
+    font:inherit; font-size:0.875rem; font-weight:600;
+    padding:0.5rem 0.625rem; border-radius:0.5rem;
+    transition:background .12s ease;
+  }
+  .dd-toggle:hover{ background:var(--control-hover); }
+  .dd-toggle svg{ width:0.875rem; height:0.875rem; color:var(--text-dim); transition:transform .15s ease; }
+  .dd.open .dd-toggle{ background:var(--control-hover); }
+  .dd.open .dd-toggle svg{ transform:rotate(180deg); }
+  .dd-menu{
+    display:none; position:absolute; top:calc(100% + 0.375rem); left:-1px; right:-1px; z-index:40;
+    background:var(--control-bg); border:none; border-radius:0.5rem;
+    padding:0.3125rem; 
+  }
+  .dd.open .dd-menu{ display:block; }
+  .dd-item{
+    width:100%; display:flex; align-items:center; justify-content:space-between; gap:0.5rem;
+    border:none; background:transparent; color:var(--text-dim);
+    font:inherit; font-size:0.875rem; font-weight:600;
+    padding:0.5rem 0.625rem; border-radius:0.375rem; text-align:left;
+    transition:background .1s ease;
+  }
+  .dd-item:hover{ background:var(--control-hover); color:var(--text); }
+  .dd-item.active{ color:var(--text); }
+  .dd-item svg{ width:0.875rem; height:0.875rem; color:var(--accent); opacity:0; flex-shrink:0; }
+  .dd-item.active svg{ opacity:1; }
+
+  input[type=range]{
+    -webkit-appearance:none; width:100%; height:0.5rem; border-radius:0.25rem; /* pill-shaped: the fill edge gets rounded caps */
+    background:var(--row); outline:none; margin:0;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:0.875rem; height:0.875rem; border-radius:50%;
+    background:var(--accent); border:none; margin-top:-0.1875rem;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:0.5rem; border-radius:0.25rem; background:transparent;
+  }
+
+  .dual-range{ position:relative; height:1.5rem; cursor:pointer; touch-action:none; }
+  .dual-range input[type=range]{
+    position:absolute; top:0.5rem; left:0; width:100%; background:none; pointer-events:none;
+  }
+  .dual-range input[type=range]::-webkit-slider-thumb{ pointer-events:auto; }
+  .dual-range .track{
+    position:absolute; top:0.5rem; left:0; right:0; height:0.5rem; background:var(--row); border-radius:0.25rem;
+  }
+  .dual-range .track-fill{
+    position:absolute; top:0.5rem; height:0.5rem; background:var(--accent); border-radius:0.25rem;
+  }
+  .track-fill.gripped{ min-width:1rem; } /* keeps the two thumbs from overlapping when both ends meet */
+  /* toggles: flat rows, generous whitespace, whole row is the hit target */
+  .toggle-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0.75rem 0;
+    font-size:0.875rem; font-weight:600;
+  }
+  .toggle-row:last-child{ padding-bottom:0.25rem; }
+  /* keep the divider rhythm continuous when a toggle follows a field */
+  .field + .toggle-row{ padding-top:0.25rem; }
+  /* toggle text stays white; the square carries the state */
+  .toggle-row .toggle-label{ color:var(--text); }
+
+  .color-swatches{ display:flex; flex-wrap:wrap; gap:0.625rem; }
+  .color-swatch{
+    width:2.375rem; height:2.375rem; border-radius:0.5rem;
+    border:0.125rem solid transparent; position:relative;
+    transition:transform .12s ease, border-color .12s ease;
+  }
+  .color-swatch:hover{ transform:scale(1.06); }
+  .color-swatch.active{ border-color:var(--text); }
+  .color-swatch.active::after{
+    content:'✓';
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:#fff; font-size:0.875rem; font-weight:800; text-shadow:0 0.0625rem 0.125rem rgba(0,0,0,.4);
+  }
+  .custom-color-row{
+    display:flex; align-items:center; gap:0.75rem; margin-top:0.875rem;
+  }
+  .custom-color-row input[type=color]{
+    width:2.375rem; height:2.375rem; border:none; border-radius:0.5rem;
+    background:transparent; padding:0;
+  }
+  .custom-color-row input[type=color]::-webkit-color-swatch-wrapper{ padding:0; border-radius:0.5rem; }
+  .custom-color-row input[type=color]::-webkit-color-swatch{ border:none; border-radius:0.5rem; }
+  .custom-color-label{ font-size:0.875rem; font-weight:600; color:var(--text-dim); }
+
+  /* config list rows (Load / Manage) */
+  .config-row{
+    display:flex; align-items:center; gap:0.75rem;
+    background:var(--row); border-radius:var(--row-radius);
+    padding:0.625rem 0.75rem; margin-bottom:var(--row-gap);
+  }
+  .config-row:last-child{ margin-bottom:0; }
+  .config-row-name{ flex:1; font-size:1.1875rem; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .config-row-load{
+    font-size:0.75rem; font-weight:700; color:var(--accent);
+    padding:0.375rem 0.75rem; border-radius:0.375rem; background:rgba(59,124,246,.12);
+    flex-shrink:0;
+  }
+  .config-row-load:hover{ background:rgba(59,124,246,.22); }
+  .config-row-delete{
+    width:1.875rem; height:1.875rem; border-radius:0.375rem; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    color:var(--text-faint);
+  }
+  .config-row-delete:hover{ background:rgba(239,68,68,.15); color:#ef4444; }
+  .config-row-delete svg{ width:0.8125rem; height:0.8125rem; }
+
+</style>
+</head>
+<body>
+
+  <!-- CLICKGUI -->
+  <div id="clickgui" class="open">
+    <div class="gui-window">
+      <div class="gui-tabs">
+        <div class="tabs-left" id="topTabs">
+          <button class="tab-btn active" data-tab="home"><i data-lucide="swords" class="sword-icon"></i> Modules</button>
+          <button class="tab-btn" data-tab="favorites"><i data-lucide="star"></i> Favorites</button>
+          <button class="tab-btn" data-tab="gui"><i data-lucide="palette"></i> GUI</button>
+        </div>
+        <div class="tabs-right">
+          <button class="icon-btn" id="searchBtn" title="Search"><i data-lucide="search"></i></button>
+          <button class="icon-btn" id="configBtn" title="Configs"><i data-lucide="folder"></i>
+            <div class="ctx-menu" id="configMenu" style="top:calc(100% + 0.375rem);">
+              <div class="ctx-item" id="ctxLoad">Load Config</div>
+              <div class="ctx-item" id="ctxSave">Save Config</div>
+              <div class="ctx-item" id="ctxManage">Manage Configs…</div>
+            </div>
+          </button>
+          <button class="icon-btn" id="settingsBtn" title="Settings"><i data-lucide="settings"></i></button>
+        </div>
+        <div class="tab-search" id="tabSearch">
+          <i data-lucide="search"></i>
+          <input id="tabSearchInput" placeholder="Search modules..." autocomplete="off">
+          <button type="button" class="search-clear" id="tabSearchClear" style="display:none"><i data-lucide="x"></i></button>
+        </div>
+      </div>
+
+      <div class="gui-body">
+        <div class="sidebar" id="sidebar"></div>
+        <div class="content" id="content"></div>
+        <div class="settings-drawer" id="settingsDrawer"><div class="settings-drawer-inner" id="settingsDrawerInner" style="display:none"></div></div>
+      </div>
+    </div>
+  </div>
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+// re-scan for <i data-lucide="..."> elements and replace them with SVGs;
+// call after every innerHTML render that injects icons
+function refreshIcons(){ if(window.lucide) lucide.createIcons(); }
+const categories = ["Combat","Visual","Movement","Misc","Network"];
+
+const modules = {
+  Combat: [
+    { name:"AimAssist", icon:"crosshair", enabled:true, favorite:true,
+      fields:[
+        {type:"select", key:"mode", label:"Current Mode", options:["Blatant","Silent","Legit"], value:"Blatant"},
+        {type:"select", key:"priority", label:"Priority", options:["Distance","Health","Angle"], value:"Distance"},
+        {type:"select", key:"target", label:"Target Entity Type", options:["Players, Naked","Players, Armored","Mobs","Animals"], value:"Players, Naked"},
+        {type:"slider", key:"speed", label:"Speed", min:0, max:10, step:0.1, value:5.0},
+        {type:"range", key:"fov", label:"Fov", min:0, max:180, step:1, unit:"°", value:[0,120]},
+        {type:"range", key:"distance", label:"Distance", min:0, max:6, step:0.1, value:[0,4]},
+        {type:"toggle", key:"reqClick", label:"Require Click", value:true},
+        {type:"toggle", key:"weaponsOnly", label:"Weapons Only", value:true},
+        {type:"toggle", key:"breakBlock", label:"Break Block", value:false}
+      ]},
+    { name:"AutoClicker", icon:"zap", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"pattern", label:"Click Pattern", options:["Butterfly","Human","Jitter","Static"], value:"Butterfly"},
+        {type:"select", key:"style", label:"Click Style", options:["Human","Robotic"], value:"Human"},
+        {type:"slider", key:"avg", label:"Average CPS", min:0, max:20, step:0.1, value:17.5},
+        {type:"range", key:"range", label:"CPS Range", min:0, max:20, step:1, value:[14,20]},
+        {type:"toggle", key:"randomize", label:"Randomize", value:true},
+        {type:"toggle", key:"sync", label:"Sync With Swing", value:false}
+      ]},
+    { name:"AutoRefill", icon:"flask-conical", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Blatant","Legit"], value:"Blatant"},
+        {type:"select", key:"item", label:"Item Type", options:["Potion","Food","Blocks"], value:"Potion"},
+        {type:"slider", key:"delay", label:"Delay (ticks)", min:0, max:20, step:1, value:7},
+        {type:"toggle", key:"onEmpty", label:"Refill On Empty", value:true},
+        {type:"toggle", key:"silent", label:"Silent Inventory", value:false}
+      ]},
+    { name:"BlockHit", icon:"shield", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Active","Passive"], value:"Active"},
+        {type:"range", key:"duration", label:"Duration", min:0, max:100, step:1, value:[10,50]},
+        {type:"slider", key:"chance", label:"Chance", min:0, max:100, step:1, value:60},
+        {type:"toggle", key:"onlyTargeted", label:"Only When Targeted", value:true}
+      ]},
+    { name:"HitSelect", icon:"locate", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Resist","Aggressive"], value:"Resist"},
+        {type:"slider", key:"chance", label:"Chance", min:0, max:100, step:1, value:90},
+        {type:"toggle", key:"ignoreTotem", label:"Ignore Totem", value:false}
+      ]}
+  ],
+  Visual: [
+    { name:"ESP", icon:"eye", enabled:true, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Box","Glow","Skeleton"], value:"Box"},
+        {type:"slider", key:"dist", label:"Distance", min:0, max:100, step:1, value:60},
+        {type:"toggle", key:"walls", label:"Through Walls", value:true},
+        {type:"toggle", key:"health", label:"Show Health", value:true}
+      ]},
+    { name:"Fullbright", icon:"sun", enabled:true, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Gamma","Night Vision"], value:"Gamma"},
+        {type:"slider", key:"gamma", label:"Gamma", min:0, max:16, step:1, value:16},
+        {type:"toggle", key:"animated", label:"Animated", value:false}
+      ]},
+    { name:"NoHurtCam", icon:"heart-pulse", enabled:false, favorite:false,
+      fields:[
+        {type:"slider", key:"smooth", label:"Smoothness", min:0, max:10, step:1, value:5}
+      ]},
+    { name:"Zoom", icon:"zoom-in", enabled:false, favorite:false,
+      fields:[
+        {type:"slider", key:"level", label:"Zoom Level", min:1, max:10, step:0.5, value:4},
+        {type:"select", key:"smoothing", label:"Smoothing", options:["Linear","Ease"], value:"Ease"},
+        {type:"toggle", key:"scroll", label:"Scroll To Adjust", value:true}
+      ]},
+    { name:"Freelook", icon:"video", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"bind", label:"Bind Type", options:["Key","Hold"], value:"Hold"}
+      ]},
+    { name:"Tracers", icon:"focus", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"target", label:"Target Type", options:["Players","Mobs","Items"], value:"Players"},
+        {type:"slider", key:"dist", label:"Distance", min:0, max:100, step:1, value:50},
+        {type:"toggle", key:"onlyVisible", label:"Only Visible", value:false}
+      ]},
+    { name:"StorageESP", icon:"package-open", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Box","Glow"], value:"Box"},
+        {type:"slider", key:"dist", label:"Distance", min:0, max:100, step:1, value:40},
+        {type:"toggle", key:"chests", label:"Chests", value:true},
+        {type:"toggle", key:"furnaces", label:"Furnaces", value:false}
+      ]},
+    { name:"AntiBlind", icon:"eye-off", enabled:true, favorite:false,
+      fields:[
+        {type:"toggle", key:"flash", label:"Remove Flash Effect", value:true},
+        {type:"toggle", key:"fire", label:"Remove Fire Overlay", value:false}
+      ]},
+    { name:"HUD", icon:"layout-grid", enabled:true, favorite:false,
+      fields:[
+        {type:"select", key:"style", label:"Style", options:["Minimal","Detailed"], value:"Minimal"},
+        {type:"slider", key:"scale", label:"Scale", min:0.5, max:2, step:0.05, value:1},
+        {type:"toggle", key:"coords", label:"Show Coordinates", value:false}
+      ]}
+  ],
+  Movement: [
+    { name:"Speed", icon:"gauge", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Strafe","Bhop","Legit"], value:"Strafe"},
+        {type:"slider", key:"mult", label:"Speed Multiplier", min:1, max:3, step:0.05, value:1.3},
+        {type:"toggle", key:"bypass", label:"Vanilla Check Bypass", value:true}
+      ]},
+    { name:"Flight", icon:"plane", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Vanilla","Glide","Vanilla Fast"], value:"Vanilla"},
+        {type:"slider", key:"vspeed", label:"Vertical Speed", min:0, max:5, step:0.1, value:1},
+        {type:"toggle", key:"nofall", label:"No Fall", value:true}
+      ]},
+    { name:"NoFall", icon:"arrow-down-to-line", enabled:true, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Vanilla","Packet","Blink"], value:"Packet"}
+      ]},
+    { name:"Sprint", icon:"footprints", enabled:true, favorite:false,
+      fields:[
+        {type:"toggle", key:"autoSprint", label:"Auto Sprint", value:true},
+        {type:"toggle", key:"water", label:"Sprint In Water", value:false}
+      ]},
+    { name:"Step", icon:"arrow-up-to-line", enabled:false, favorite:false,
+      fields:[
+        {type:"slider", key:"height", label:"Step Height", min:0, max:2, step:0.1, value:1},
+        {type:"select", key:"mode", label:"Mode", options:["Simple","NCP","Vanilla"], value:"NCP"}
+      ]}
+  ],
+  Misc: [
+    { name:"AutoRespawn", icon:"rotate-cw", enabled:true, favorite:false,
+      fields:[
+        {type:"slider", key:"delay", label:"Delay (ms)", min:0, max:2000, step:50, value:300}
+      ]},
+    { name:"ChatSpam", icon:"message-square", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Sequential","Random"], value:"Sequential"},
+        {type:"slider", key:"delay", label:"Delay (ms)", min:0, max:5000, step:100, value:1000}
+      ]},
+    { name:"Notifier", icon:"bell", enabled:true, favorite:false,
+      fields:[
+        {type:"toggle", key:"sound", label:"Sound Alerts", value:true},
+        {type:"toggle", key:"visual", label:"Visual Alerts", value:true}
+      ]}
+  ],
+  Network: [
+    { name:"AntiVPN", icon:"ban", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"action", label:"Action", options:["Kick","Warn","Log"], value:"Warn"}
+      ]},
+    { name:"PacketMine", icon:"server", enabled:false, favorite:false,
+      fields:[
+        {type:"select", key:"mode", label:"Mode", options:["Normal","Async"], value:"Normal"},
+        {type:"slider", key:"range", label:"Range", min:0, max:6, step:0.1, value:4.5},
+        {type:"toggle", key:"rotate", label:"Rotate", value:false}
+      ]},
+    { name:"NoSlowdown", icon:"fast-forward", enabled:true, favorite:false,
+      fields:[
+        {type:"select", key:"affects", label:"Affects", options:["Eating","Shield","Bow","All"], value:"All"}
+      ]},
+    { name:"Freeze", icon:"snowflake", enabled:false, favorite:false,
+      fields:[
+        {type:"slider", key:"duration", label:"Duration (s)", min:0, max:30, step:1, value:10}
+      ]}
+  ]
+};
+
+function moduleDesc(mod){
+  return mod.fields.slice(0,3).map(f=>{
+    if(f.type==="select") return f.value;
+    if(f.type==="slider") return f.label.split(' ')[0]+" "+f.value;
+    if(f.type==="range") return f.label+" "+f.value[0]+(f.unit||'')+"-"+f.value[1]+(f.unit||'');
+    return null;
+  }).filter(Boolean).slice(0,3).join(", ");
+}
+
+// key of the tab that opens by default whenever the panel is opened ("home" | "favorites" | "gui")
+let defaultTab = "home";
+
+let state = { topTab:"home", activeCat:"Combat", openModule:null, searching:false, query:"", configMode:"load" };
+
+const guiEl = document.getElementById('clickgui');
+const sidebarEl = document.getElementById('sidebar');
+const contentEl = document.getElementById('content');
+const guiBodyEl = document.querySelector('.gui-body');
+const guiWindowEl = document.querySelector('.gui-window');
+const guiTabsEl = document.querySelector('.gui-tabs');
+const favTabBtn = document.querySelector('.tab-btn[data-tab="favorites"]');
+const settingsDrawerEl = document.getElementById('settingsDrawer');
+const settingsDrawerInnerEl = document.getElementById('settingsDrawerInner');
+
+function openGui(){
+  state.topTab = defaultTab;
+  state.openModule = null;
+  state.searching = false;
+  guiEl.classList.add('open');
+  render();
+}
+function closeGui(){ guiEl.classList.remove('open'); state.openModule=null; }
+
+guiEl.addEventListener('click', (e)=>{ if(e.target===guiEl) closeGui(); });
+
+// --- draggable window (transform-based: no reflow, no easing, 1:1 with cursor) ---
+let offset = { x:0, y:0 };
+let drag = null;
+guiTabsEl.addEventListener('pointerdown', (e)=>{
+  if(e.target.closest('button, input')) return; // don't drag when grabbing a tab/icon button or the search input
+  const rect = guiWindowEl.getBoundingClientRect();
+  drag = { startX:e.clientX, startY:e.clientY, startOffX:offset.x, startOffY:offset.y, rectLeft:rect.left, rectTop:rect.top, w:rect.width, h:rect.height };
+  guiWindowEl.style.transition = 'none';
+  guiWindowEl.classList.add('dragging');
+  guiTabsEl.setPointerCapture(e.pointerId);
+});
+guiTabsEl.addEventListener('pointermove', (e)=>{
+  if(!drag) return;
+  let dx = e.clientX - drag.startX;
+  let dy = e.clientY - drag.startY;
+  let left = drag.rectLeft + dx;
+  let top = drag.rectTop + dy;
+  // keep at least ~55% of the window on-screen both horizontally and vertically,
+  // so it can never be dragged almost entirely off any edge (this was the bottom-edge bug)
+  const minVisibleW = drag.w * 0.45;
+  const minVisibleH = drag.h * 0.55;
+  left = Math.max(minVisibleW - drag.w, Math.min(window.innerWidth - minVisibleW, left));
+  top = Math.max(0, Math.min(window.innerHeight - minVisibleH, top));
+  offset.x = drag.startOffX + (left - drag.rectLeft);
+  offset.y = drag.startOffY + (top - drag.rectTop);
+  guiWindowEl.style.transform = `translate(${offset.x}px, ${offset.y}px)`;
+});
+function endDrag(){ drag = null; guiWindowEl.classList.remove('dragging'); guiWindowEl.style.transition = ''; }
+guiTabsEl.addEventListener('pointerup', endDrag);
+guiTabsEl.addEventListener('pointercancel', endDrag);
+window.addEventListener('keydown', (e)=>{
+  if(e.key === 'Shift' && e.location === 2){ // right shift
+    guiEl.classList.contains('open') ? closeGui() : openGui();
+  }
+  if(e.key === 'Escape' && guiEl.classList.contains('open')){
+    if(state.searching){ state.searching = false; state.openModule = null; render(); } // Esc exits search first, then the GUI
+    else closeGui();
+  }
+  // configurable search keybind (only when the GUI is open and not typing in a field)
+  if(
+    guiEl.classList.contains('open') &&
+    e.key.length === 1 &&
+    e.key.toLowerCase() === searchKeybind.toLowerCase() &&
+    !(e.target && (e.target.tagName==='INPUT' || e.target.tagName==='SELECT' || e.target.tagName==='TEXTAREA' || e.target.isContentEditable))
+  ){
+    e.preventDefault();
+    state.searching = !state.searching;
+    state.openModule = null;
+    render();
+  }
+});
+
+let searchKeybind = "F"; // configurable in the GUI tab
+let tooltipDelay = 800;  // configurable in the GUI tab (ms)
+let squareCorners = false; // configurable in the GUI tab
+const themeOptions = [
+  { key:"dark", label:"Dark" },
+  { key:"light", label:"Light" }
+];
+let theme = "dark"; // configurable in the GUI tab
+
+// ---- tooltip system (modules + settings drawer only, via [data-tooltip]) ----
+const tooltipEl = document.createElement('div');
+tooltipEl.id = 'tooltip';
+document.body.appendChild(tooltipEl);
+let tooltipTimer = null;
+let tooltipTarget = null;
+function hideTooltip(){
+  clearTimeout(tooltipTimer);
+  tooltipTarget = null;
+  tooltipEl.classList.remove('show');
+}
+function positionTooltip(x, y){
+  const pad = 14;
+  const r = tooltipEl.getBoundingClientRect();
+  let left = x + pad, top = y + pad;
+  if(left + r.width > window.innerWidth - 8) left = x - r.width - pad;
+  if(top + r.height > window.innerHeight - 8) top = y - r.height - pad;
+  tooltipEl.style.left = Math.max(8, left) + 'px';
+  tooltipEl.style.top = Math.max(8, top) + 'px';
+}
+document.addEventListener('mouseover', (e)=>{
+  const t = e.target.closest('[data-tooltip]');
+  if(t === tooltipTarget) return; // ignore moves between children of the same target
+  tooltipTarget = t;
+  clearTimeout(tooltipTimer);
+  if(!t){ hideTooltip(); return; }
+  tooltipTimer = setTimeout(()=>{
+    if(tooltipTarget !== t) return;
+    tooltipEl.textContent = t.dataset.tooltip;
+    tooltipEl.classList.add('show');
+    positionTooltip(e.clientX, e.clientY);
+  }, tooltipDelay);
+});
+document.addEventListener('mousemove', (e)=>{
+  if(tooltipEl.classList.contains('show')) positionTooltip(e.clientX, e.clientY);
+});
+document.addEventListener('mouseout', (e)=>{
+  if(e.target.closest('[data-tooltip]')) hideTooltip();
+});
+document.addEventListener('mousedown', hideTooltip);
+
+// open a dropdown, flipping it upward when there's no room below inside its scroll container
+function openDropdown(dd){
+  document.querySelectorAll('.dd.open').forEach(o=>{ if(o!==dd) o.classList.remove('open'); });
+  dd.classList.add('open');
+  const menu = dd.querySelector('.dd-menu');
+  if(!menu) return;
+  menu.style.top = ''; menu.style.bottom = '';
+  const r = dd.getBoundingClientRect();
+  const scroller = dd.closest('.content, .settings-drawer-inner');
+  const limit = scroller ? scroller.getBoundingClientRect().bottom : window.innerHeight;
+  if(r.bottom + menu.offsetHeight > limit - 8){
+    menu.style.top = 'auto';
+    menu.style.bottom = 'calc(100% + 0.375rem)';
+  }
+}
+
+document.getElementById('topTabs').addEventListener('click', (e)=>{
+  const btn = e.target.closest('.tab-btn');
+  if(!btn) return;
+  state.topTab = btn.dataset.tab;
+  state.openModule = null;
+  state.searching = false;
+  render();
+});
+
+document.getElementById('searchBtn').addEventListener('click', ()=>{
+  state.searching = !state.searching;
+  state.openModule = null;
+  render();
+});
+
+/* ---------- configs (in-memory) ---------- */
+let savedConfigs = []; // { name, data }
+
+function snapshotModules(){ return JSON.parse(JSON.stringify(modules)); }
+
+function applyConfigData(data){
+  categories.forEach(c=>{ if(data[c]) modules[c] = data[c]; });
+}
+
+function saveConfig(){
+  const name = (prompt('Name this config:', 'Config ' + (savedConfigs.length + 1)) || '').trim();
+  if(!name) return;
+  savedConfigs.push({ name, data: snapshotModules() });
+}
+
+function loadConfig(idx){
+  const cfg = savedConfigs[idx];
+  if(!cfg) return;
+  applyConfigData(JSON.parse(JSON.stringify(cfg.data)));
+  state.topTab = 'home';
+  state.openModule = null;
+  render();
+}
+
+function deleteConfig(idx){
+  savedConfigs.splice(idx, 1);
+  renderConfigsScreen();
+}
+
+function renderConfigsScreen(){
+  const isManage = state.configMode === 'manage';
+  const rows = savedConfigs.map((cfg, i) => `
+    <div class="config-row">
+      <span class="config-row-name">${cfg.name}</span>
+      <span class="config-row-load" data-idx="${i}" data-act="load">Load</span>
+      ${isManage ? `<span class="config-row-delete" data-idx="${i}" data-act="delete" title="Delete"><i data-lucide="trash-2"></i></span>` : ''}
+    </div>`).join('');
+
+  contentEl.innerHTML = `
+    <div class="settings-panel">
+      <div class="settings-header" id="backBtn"><span class="back-arrow"><i data-lucide="arrow-left"></i></span> ${isManage ? 'Manage Configs' : 'Load Config'}</div>
+      ${savedConfigs.length === 0
+        ? `<div class="empty-state">No saved configs yet. Use "Save Config" to create one.</div>`
+        : rows}
+    </div>`;
+
+  document.getElementById('backBtn').addEventListener('click', ()=>{
+    state.topTab = 'home';
+    render();
+  });
+
+  contentEl.querySelectorAll('[data-act="load"]').forEach(el=>{
+    el.addEventListener('click', ()=> loadConfig(parseInt(el.dataset.idx)));
+  });
+  contentEl.querySelectorAll('[data-act="delete"]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      deleteConfig(parseInt(el.dataset.idx));
+    });
+  });
+  refreshIcons();
+}
+
+const configBtnEl = document.getElementById('configBtn');
+const configMenuEl = document.getElementById('configMenu');
+configBtnEl.addEventListener('click', (e)=>{
+  e.stopPropagation();
+  configMenuEl.classList.toggle('show');
+});
+document.addEventListener('click', ()=>{ configMenuEl.classList.remove('show'); });
+
+// close any open custom dropdown (.dd) when clicking outside of it
+document.addEventListener('click', (e)=>{
+  document.querySelectorAll('.dd.open').forEach(d=>{ if(!d.contains(e.target)) d.classList.remove('open'); });
+});
+
+document.getElementById('ctxLoad').addEventListener('click', (e)=>{
+  e.stopPropagation();
+  configMenuEl.classList.remove('show');
+  state.configMode = 'load';
+  state.topTab = 'configs';
+  state.openModule = null;
+  render();
+});
+document.getElementById('ctxSave').addEventListener('click', (e)=>{
+  e.stopPropagation();
+  configMenuEl.classList.remove('show');
+  saveConfig();
+});
+document.getElementById('ctxManage').addEventListener('click', (e)=>{
+  e.stopPropagation();
+  configMenuEl.classList.remove('show');
+  state.configMode = 'manage';
+  state.topTab = 'configs';
+  state.openModule = null;
+  render();
+});
+
+document.getElementById('settingsBtn').addEventListener('click', ()=>{
+  state.topTab = 'clientsettings';
+  state.openModule = null;
+  render();
+});
+
+/* ---------- drag-to-favorite ---------- */
+// Drop a module row onto the Favorites tab to favorite it, from anywhere.
+favTabBtn.addEventListener('dragover', (e)=>{
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  favTabBtn.classList.add('drop-hover');
+});
+favTabBtn.addEventListener('dragleave', ()=>{ favTabBtn.classList.remove('drop-hover'); });
+favTabBtn.addEventListener('drop', (e)=>{
+  e.preventDefault();
+  favTabBtn.classList.remove('drop-hover');
+  handleFavoriteDrop(e);
+});
+
+// Also allow dropping straight into the favorites list itself.
+contentEl.addEventListener('dragover', (e)=>{
+  if(state.topTab !== 'favorites') return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  contentEl.classList.add('drop-hover');
+});
+contentEl.addEventListener('dragleave', ()=>{ contentEl.classList.remove('drop-hover'); });
+contentEl.addEventListener('drop', (e)=>{
+  if(state.topTab !== 'favorites') return;
+  e.preventDefault();
+  contentEl.classList.remove('drop-hover');
+  handleFavoriteDrop(e);
+});
+
+function handleFavoriteDrop(e){
+  let data;
+  try{ data = JSON.parse(e.dataTransfer.getData('text/plain')); }catch(err){ return; }
+  if(!data || !data.cat || modules[data.cat] === undefined) return;
+  const mod = modules[data.cat][data.idx];
+  if(!mod) return;
+  mod.favorite = true;
+  if(state.topTab === 'favorites') render();
+}
+
+function renderTabs(){
+  document.querySelectorAll('#topTabs .tab-btn').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab===state.topTab);
+  });
+}
+
+function renderSidebar(){
+  if(state.topTab !== 'home' || state.searching){
+    sidebarEl.style.display='none';
+    guiBodyEl.classList.add('no-sidebar');
+    return;
+  }
+  sidebarEl.style.display='block';
+  guiBodyEl.classList.remove('no-sidebar');
+  sidebarEl.innerHTML = categories.map(c=>
+    `<div class="cat-item ${c===state.activeCat?'active':''}" data-cat="${c}">${c}</div>`
+  ).join('');
+  sidebarEl.querySelectorAll('.cat-item').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      state.activeCat = el.dataset.cat;
+      state.openModule = null;
+      render();
+    });
+  });
+}
+
+function moduleRowHTML(mod, catName, idx){
+  const tip = [moduleDesc(mod), mod.bind?`Bind: ${mod.bind}`:''].filter(Boolean).join('\n');
+  return `
+  <div class="module-row ${mod.enabled?'enabled':''}" draggable="true" data-cat="${catName}" data-idx="${idx}"${tip?` data-tooltip="${tip}"`:''}>
+    <div class="mod-icon"><i data-lucide="${mod.icon}"></i></div>
+    <div class="mod-text"><span class="mod-name">${mod.name}</span><span class="mod-desc">${moduleDesc(mod)}</span></div>
+    ${mod.bind?`<span class="mod-bind">${mod.bind}</span>`:''}
+  </div>`;
+}
+
+let bindCapture = null;
+// generic key capture: calls cb(key) — cb(null) when cancelled with Esc
+function captureKey(title, cb){
+  if(bindCapture) return; // one capture at a time
+  const overlay = document.createElement('div');
+  overlay.className = 'bind-overlay';
+  overlay.innerHTML = `<div class="bind-box">
+    <div class="bind-title">Bind key — ${title}</div>
+    <div class="bind-hint">Press any key…</div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const onKey = (e)=>{
+    e.preventDefault();
+    e.stopPropagation();
+    window.removeEventListener('keydown', onKey, true);
+    overlay.remove();
+    bindCapture = null;
+    cb(e.key === 'Escape' ? null : (e.key.length === 1 ? e.key.toUpperCase() : e.key));
+  };
+  bindCapture = { overlay, onKey };
+  window.addEventListener('keydown', onKey, true);
+}
+
+function startBindCapture(catName, idx){
+  const mod = modules[catName][idx];
+  captureKey(mod.name, (key)=>{
+    if(key){
+      mod.bind = key;
+    } else {
+      delete mod.bind; // Esc clears the bind
+    }
+    // update just this row's badge — no full re-render, so no flash
+    const rowEl = document.querySelector(`.module-row[data-cat="${catName}"][data-idx="${idx}"]`);
+    if(rowEl){
+      let badge = rowEl.querySelector('.mod-bind');
+      if(mod.bind){
+        if(!badge){ badge = document.createElement('span'); badge.className = 'mod-bind'; rowEl.appendChild(badge); }
+        badge.textContent = mod.bind;
+      } else if(badge){
+        badge.remove();
+      }
+    }
+  });
+}
+
+function attachRowEvents(container){
+  container.querySelectorAll('.module-row').forEach(row=>{
+    const catName = row.dataset.cat;
+    const idx = parseInt(row.dataset.idx);
+    if(catName===undefined || isNaN(idx)) return;
+    const mod = modules[catName][idx];
+
+    row.addEventListener('click', ()=>{
+      mod.enabled = !mod.enabled;
+      row.classList.toggle('enabled', mod.enabled);
+    });
+
+    row.addEventListener('contextmenu', (e)=>{
+      e.preventDefault();
+      const isSame = state.openModule && state.openModule.cat===catName && state.openModule.idx===idx;
+      if(isSame){ closeModuleSettings(); } else { openModuleSettings(catName, idx); }
+    });
+
+    // middle mouse click -> keybind capture
+    row.addEventListener('mousedown', (e)=>{
+      if(e.button === 1){
+        e.preventDefault(); // stop middle-click autoscroll
+        startBindCapture(catName, idx);
+      }
+    });
+
+    row.addEventListener('dragstart', (e)=>{
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', JSON.stringify({cat:catName, idx:idx}));
+      // deferred so the browser captures a full-opacity drag ghost before the
+      // source row fades — otherwise the ghost image fades too and you lose
+      // the "this is being dragged" cue on the cursor itself
+      setTimeout(()=> row.classList.add('dragging-row'), 0);
+    });
+    row.addEventListener('dragend', ()=>{
+      row.classList.remove('dragging-row');
+      favTabBtn.classList.remove('drop-hover');
+      contentEl.classList.remove('drop-hover');
+    });
+  });
+}
+
+function renderFieldHTML(f, i){
+  if(f.type==='select'){
+    return `<div class="field inline" data-tooltip="Current: ${f.value}">
+      <div class="field-label">${f.label}</div>
+      <div class="dd" data-idx="${i}">
+        <button type="button" class="dd-toggle">
+          <span class="dd-val">${f.value}</span>
+          <i data-lucide="chevron-down"></i>
+        </button>
+        <div class="dd-menu">
+          ${f.options.map(o=>`<button type="button" class="dd-item ${o===f.value?'active':''}" data-value="${o}">${o}</button>`).join('')}
+        </div>
+      </div>
+    </div>`;
+  }
+  if(f.type==='slider'){
+    return `<div class="field" data-tooltip="${f.label}: ${f.value} (${f.min}–${f.max})">
+      <div class="field-label">${f.label} <input type="number" class="num-input" data-idx="${i}" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.value}"></div>
+      <div class="dual-range">
+        <div class="track"></div>
+        <div class="track-fill" style="width:${((f.value-f.min)/(f.max-f.min))*100}%"></div>
+        <input type="range" data-idx="${i}" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.value}">
+      </div>
+    </div>`;
+  }
+  if(f.type==='range'){
+    const pctLo = ((f.value[0]-f.min)/(f.max-f.min))*100;
+    const pctHi = ((f.value[1]-f.min)/(f.max-f.min))*100;
+    return `<div class="field" data-tooltip="${f.label}: ${f.value[0]}–${f.value[1]}${f.unit||''}">
+      <div class="field-label">${f.label} <span class="range-nums"><input type="number" class="num-input" data-idx="${i}" data-side="lo" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.value[0]}"><span class="range-sep">–</span><input type="number" class="num-input" data-idx="${i}" data-side="hi" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.value[1]}">${f.unit?`<span class="val">${f.unit}</span>`:''}</span></div>
+      <div class="dual-range">
+        <div class="track"></div>
+        <div class="track-fill gripped" style="left:${pctLo}%; width:${pctHi-pctLo}%"></div>
+        <input type="range" data-idx="${i}" data-side="lo" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.value[0]}">
+        <input type="range" data-idx="${i}" data-side="hi" min="${f.min}" max="${f.max}" step="${f.step}" value="${f.value[1]}">
+      </div>
+    </div>`;
+  }
+  if(f.type==='toggle'){
+    return `<div class="toggle-row ${f.value?'on':''}" data-idx="${i}"><span class="toggle-label">${f.label}</span><div class="switch ${f.value?'on':''}" data-idx="${i}"></div></div>`;
+  }
+  return '';
+}
+
+let drawerAnimating = false;
+let drawerCloseTimer = null;
+let drawerCloseOnEnd = null;
+function finishDrawerClose(){
+  clearTimeout(drawerCloseTimer);
+  if(drawerCloseOnEnd){ settingsDrawerEl.removeEventListener('transitionend', drawerCloseOnEnd); drawerCloseOnEnd = null; }
+  guiBodyEl.style.height = ''; // release the frozen height only now
+  settingsDrawerEl.querySelector('.settings-drawer-inner').style.display = 'none';
+  drawerAnimating = false;
+}
+function openModuleSettings(cat, idx){
+  if(drawerAnimating) finishDrawerClose();
+  state.openModule = {cat, idx};
+  // freeze the body at its pre-open height BEFORE the panel becomes visible,
+  // so the drawer can never stretch the container; it scrolls internally instead
+  if(!guiBodyEl.style.height) guiBodyEl.style.height = guiBodyEl.getBoundingClientRect().height + 'px';
+  const inner = settingsDrawerEl.querySelector('.settings-drawer-inner');
+  inner.style.display = '';
+  void settingsDrawerEl.offsetWidth; // flush styles so the slide-in transition runs
+  guiWindowEl.classList.add('settings-open');
+  guiBodyEl.classList.add('settings-open');
+  renderSettings();
+  settingsDrawerEl.classList.add('open');
+}
+function closeModuleSettings(){
+  state.openModule = null;
+  guiWindowEl.classList.remove('settings-open');
+  guiBodyEl.classList.remove('settings-open');
+  settingsDrawerEl.classList.remove('open');
+  // animate the collapse first; release the frozen height once the width is back to 0
+  drawerAnimating = true;
+  drawerCloseOnEnd = (e)=>{ if(e.propertyName === 'transform') finishDrawerClose(); };
+  settingsDrawerEl.addEventListener('transitionend', drawerCloseOnEnd);
+  drawerCloseTimer = setTimeout(finishDrawerClose, 300); // fallback if transitionend is missed
+}
+
+function renderSettings(){
+  const {cat, idx} = state.openModule;
+  const mod = modules[cat][idx];
+  settingsDrawerInnerEl.innerHTML = `
+    <div class="settings-panel">
+      <div class="settings-header" id="backBtn"><span class="back-arrow"><i data-lucide="arrow-right"></i></span> ${mod.name} Settings</div>
+      <div>${mod.fields.map((f,i)=>renderFieldHTML(f,i)).join('')}</div>
+    </div>`;
+  document.getElementById('backBtn').addEventListener('click', ()=>{
+    closeModuleSettings();
+  });
+  refreshIcons();
+
+  mod.fields.forEach((f,i)=>{
+    if(f.type==='select'){
+      const dd = settingsDrawerInnerEl.querySelector(`.dd[data-idx="${i}"]`);
+      const valEl = dd.querySelector('.dd-val');
+      dd.querySelector('.dd-toggle').addEventListener('click', (e)=>{
+        e.stopPropagation();
+        if(dd.classList.contains('open')){ dd.classList.remove('open'); }
+        else{ openDropdown(dd); }
+      });
+      dd.querySelectorAll('.dd-item').forEach(item=>{
+        item.addEventListener('click', ()=>{
+          f.value = item.dataset.value;
+          valEl.textContent = f.value;
+          dd.querySelectorAll('.dd-item').forEach(x=>x.classList.toggle('active', x===item));
+          dd.classList.remove('open');
+        });
+      });
+    } else if(f.type==='slider'){
+      const range = settingsDrawerInnerEl.querySelector(`input[type="range"][data-idx="${i}"]`);
+      const num = settingsDrawerInnerEl.querySelector(`.num-input[data-idx="${i}"]`);
+      const clamp = v => Math.min(f.max, Math.max(f.min, v));
+      const snap = v => clamp(parseFloat((Math.round((v - f.min)/f.step)*f.step + f.min).toFixed(6)));
+      // the fill is a rounded pill div — its end cap curves naturally
+      const fill = range.closest('.dual-range').querySelector('.track-fill');
+      const paint = ()=>{
+        fill.style.width = ((f.value - f.min)/(f.max - f.min))*100 + '%';
+      };
+      paint();
+      range.addEventListener('input', ()=>{
+        f.value = parseFloat(range.value);
+        num.value = f.value;            // keep the text box in sync while dragging
+        paint();
+      });
+      num.addEventListener('input', ()=>{
+        const v = parseFloat(num.value);
+        if(!isNaN(v)){ f.value = clamp(v); range.value = f.value; paint(); } // live-update as they type
+      });
+      num.addEventListener('change', ()=>{
+        f.value = snap(parseFloat(num.value));
+        range.value = f.value;
+        num.value = f.value;              // normalize on commit (blur / Enter)
+        paint();
+      });
+      // thumbless drag: the track itself is the handle
+      const wrap = fill.parentElement;
+      let dragging = false;
+      const dragTo = (e)=>{
+        const r = wrap.getBoundingClientRect();
+        const pct = Math.min(1, Math.max(0, (e.clientX - r.left)/r.width));
+        f.value = snap(f.min + pct*(f.max - f.min));
+        range.value = f.value;
+        num.value = f.value;
+        paint();
+      };
+      wrap.addEventListener('pointerdown', (e)=>{
+        if(e.button !== 0) return;
+        dragging = true;
+        wrap.setPointerCapture(e.pointerId);
+        dragTo(e);
+      });
+      wrap.addEventListener('pointermove', (e)=>{ if(dragging) dragTo(e); });
+      wrap.addEventListener('pointerup', ()=>{ dragging = false; });
+      wrap.addEventListener('lostpointercapture', ()=>{ dragging = false; });
+    } else if(f.type==='range'){
+      const lo = settingsDrawerInnerEl.querySelector(`input[type="range"][data-idx="${i}"][data-side="lo"]`);
+      const hi = settingsDrawerInnerEl.querySelector(`input[type="range"][data-idx="${i}"][data-side="hi"]`);
+      const numLo = settingsDrawerInnerEl.querySelector(`.num-input[data-idx="${i}"][data-side="lo"]`);
+      const numHi = settingsDrawerInnerEl.querySelector(`.num-input[data-idx="${i}"][data-side="hi"]`);
+      const fill = lo.closest('.dual-range').querySelector('.track-fill');
+      const clamp = v => Math.min(f.max, Math.max(f.min, v));
+      const snap = v => clamp(parseFloat((Math.round((v - f.min)/f.step)*f.step + f.min).toFixed(6)));
+      const paint = (loV, hiV) => {
+        const pctLo = ((loV-f.min)/(f.max-f.min))*100;
+        const pctHi = ((hiV-f.min)/(f.max-f.min))*100;
+        fill.style.left = pctLo+'%';
+        fill.style.width = (pctHi-pctLo)+'%';
+      };
+      // dragging either thumb: keep sorted, sync both boxes
+      const onRange = ()=>{
+        let loV = parseFloat(lo.value), hiV = parseFloat(hi.value);
+        if(loV > hiV){ [loV,hiV] = [hiV,loV]; lo.value = loV; hi.value = hiV; }
+        f.value = [loV, hiV];
+        numLo.value = loV; numHi.value = hiV;
+        paint(loV, hiV);
+      };
+      lo.addEventListener('input', onRange);
+      hi.addEventListener('input', onRange);
+      // typing in a box: live-update that side (clamped), fill follows sorted order
+      const onNum = (side)=>{
+        const box = side==='lo' ? numLo : numHi;
+        const v = parseFloat(box.value);
+        if(isNaN(v)) return;
+        const c = clamp(v);
+        if(side==='lo') f.value = [c, Math.max(c, f.value[1])];
+        else f.value = [Math.min(f.value[0], c), c];
+        lo.value = f.value[0]; hi.value = f.value[1];
+        paint(f.value[0], f.value[1]);
+      };
+      numLo.addEventListener('input', ()=>onNum('lo'));
+      numHi.addEventListener('input', ()=>onNum('hi'));
+      // commit (blur / Enter): snap both to step, sort, normalize everything
+      const onCommit = ()=>{
+        f.value = [snap(f.value[0]), snap(f.value[1])];
+        lo.value = f.value[0]; hi.value = f.value[1];
+        numLo.value = f.value[0]; numHi.value = f.value[1];
+        paint(f.value[0], f.value[1]);
+      };
+      numLo.addEventListener('change', onCommit);
+      numHi.addEventListener('change', onCommit);
+      // thumbless drag: click/drag the track, the nearer end follows
+      let dragSide = null;
+      const wrap = lo.closest('.dual-range');
+      const dragTo = (e)=>{
+        const r = wrap.getBoundingClientRect();
+        const pct = Math.min(1, Math.max(0, (e.clientX - r.left)/r.width));
+        const raw = snap(f.min + pct*(f.max - f.min));
+        if(!dragSide){
+          const pctLo = (parseFloat(lo.value)-f.min)/(f.max-f.min);
+          const pctHi = (parseFloat(hi.value)-f.min)/(f.max-f.min);
+          dragSide = Math.abs(pct-pctLo) <= Math.abs(pct-pctHi) ? 'lo' : 'hi';
+        }
+        if(dragSide==='lo') lo.value = raw; else hi.value = raw;
+        onRange();
+      };
+      wrap.addEventListener('pointerdown', (e)=>{
+        if(e.button !== 0) return;
+        dragSide = null;
+        wrap.setPointerCapture(e.pointerId);
+        dragTo(e);
+      });
+      wrap.addEventListener('pointermove', (e)=>{ if(dragSide) dragTo(e); });
+      wrap.addEventListener('pointerup', ()=>{ dragSide = null; });
+      wrap.addEventListener('lostpointercapture', ()=>{ dragSide = null; });
+    } else if(f.type==='toggle'){
+      const el = settingsDrawerInnerEl.querySelector(`.switch[data-idx="${i}"]`);
+      const row = el.closest('.toggle-row');
+      row.addEventListener('click', ()=>{
+        f.value = !f.value;
+        el.classList.toggle('on', f.value);
+        row.classList.toggle('on', f.value);
+      });
+    }
+  });
+}
+
+function renderModuleList(list){
+  if(list.length===0){
+    contentEl.innerHTML = `<div class="empty-state">No modules here yet</div>`;
+    return;
+  }
+  contentEl.innerHTML = list.map(({mod,cat,idx})=>moduleRowHTML(mod,cat,idx)).join('');
+  attachRowEvents(contentEl);
+}
+
+function allModulesFlat(){
+  let out=[];
+  categories.forEach(c=> modules[c].forEach((mod,idx)=> out.push({mod,cat:c,idx})));
+  return out;
+}
+
+const primaryColors = [
+  { name:"Blue",   accent:"#3b7cf6" },
+  { name:"Purple", accent:"#8b5cf6" },
+  { name:"Pink",   accent:"#ec4899" },
+  { name:"Red",    accent:"#ef4444" },
+  { name:"Orange", accent:"#f97316" },
+  { name:"Green",  accent:"#22c55e" },
+  { name:"Teal",   accent:"#14b8a6" }
+];
+let activePrimaryColor = "#3b7cf6";
+
+const defaultTabOptions = [
+  { key:"home", label:"Modules" },
+  { key:"favorites", label:"Favorites" },
+  { key:"gui", label:"GUI" }
+];
+
+function applyPrimaryColor(hex){
+  activePrimaryColor = hex;
+  document.documentElement.style.setProperty('--accent', hex);
+  document.documentElement.style.setProperty('--accent-mid', hex);
+}
+
+function renderGuiSettings(){
+  contentEl.innerHTML = `
+    <div class="settings-panel">
+      <div class="field">
+        <div class="field-label">Primary Color</div>
+        <div class="color-swatches" id="colorSwatches">
+          ${primaryColors.map(c=>`<div class="color-swatch ${c.accent.toLowerCase()===activePrimaryColor.toLowerCase()?'active':''}" style="background:${c.accent}" data-color="${c.accent}" title="${c.name}"></div>`).join('')}
+        </div>
+        <div class="custom-color-row">
+          <input type="color" id="customColorInput" value="${activePrimaryColor}">
+          <span class="custom-color-label">Custom</span>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Default Tab</div>
+        <div class="dd" id="defaultTabDD">
+          <button type="button" class="dd-toggle">
+            <span class="dd-val">${defaultTabOptions.find(o=>o.key===defaultTab).label}</span>
+            <i data-lucide="chevron-down"></i>
+          </button>
+          <div class="dd-menu">
+            ${defaultTabOptions.map(o=>`<button type="button" class="dd-item ${o.key===defaultTab?'active':''}" data-key="${o.key}">${o.label}<i data-lucide="check"></i></button>`).join('')}
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-label">Search Keybind <button type="button" class="bind-value" id="searchBind">${searchKeybind}</button></div>
+      </div>
+      <div class="field">
+        <div class="field-label">Tooltip Delay <span class="range-nums"><input type="number" class="num-input" id="tooltipDelayNum" min="0" max="2000" step="50" value="${tooltipDelay}"><span class="range-sep">ms</span></span></div>
+        <input type="range" id="tooltipDelayRange" min="0" max="2000" step="50" value="${tooltipDelay}">
+      </div>
+      <div class="field">
+        <div class="field-label">Theme</div>
+        <div class="dd" id="themeDD">
+          <button type="button" class="dd-toggle">
+            <span class="dd-val">${themeOptions.find(o=>o.key===theme).label}</span>
+            <i data-lucide="chevron-down"></i>
+          </button>
+          <div class="dd-menu">
+            ${themeOptions.map(o=>`<button type="button" class="dd-item ${o.key===theme?'active':''}" data-key="${o.key}">${o.label}</button>`).join('')}
+          </div>
+        </div>
+      </div>
+      <div class="toggle-row ${squareCorners?'on':''}" id="squareCornersRow"><span class="toggle-label">Square Corners</span><div class="switch ${squareCorners?'on':''}"></div></div>
+    </div>`;
+  contentEl.querySelectorAll('.color-swatch').forEach(sw=>{
+    sw.addEventListener('click', ()=>{
+      applyPrimaryColor(sw.dataset.color);
+      render();
+    });
+  });
+  contentEl.querySelector('#customColorInput').addEventListener('input', (e)=>{
+    applyPrimaryColor(e.target.value);
+  });
+  const ddEl = contentEl.querySelector('#defaultTabDD');
+  const ddVal = ddEl.querySelector('.dd-val');
+  ddEl.querySelector('.dd-toggle').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    ddEl.classList.toggle('open');
+  });
+  ddEl.querySelectorAll('.dd-item').forEach(item=>{
+    item.addEventListener('click', ()=>{
+      defaultTab = item.dataset.key;
+      ddVal.textContent = item.textContent;
+      ddEl.querySelectorAll('.dd-item').forEach(x=>x.classList.toggle('active', x===item));
+      ddEl.classList.remove('open');
+    });
+  });
+  // theme dropdown
+  const themeEl = contentEl.querySelector('#themeDD');
+  const themeVal = themeEl.querySelector('.dd-val');
+  themeEl.querySelector('.dd-toggle').addEventListener('click', (e)=>{
+    e.stopPropagation();
+    if(themeEl.classList.contains('open')){ themeEl.classList.remove('open'); }
+    else{ openDropdown(themeEl); }
+  });
+  themeEl.querySelectorAll('.dd-item').forEach(item=>{
+    item.addEventListener('click', ()=>{
+      theme = item.dataset.key;
+      document.documentElement.classList.toggle('light', theme==='light');
+      themeVal.textContent = item.textContent;
+      themeEl.querySelectorAll('.dd-item').forEach(x=>x.classList.toggle('active', x===item));
+      themeEl.classList.remove('open');
+    });
+  });
+  // square corners toggle
+  const sqRow = contentEl.querySelector('#squareCornersRow');
+  sqRow.addEventListener('click', ()=>{
+    squareCorners = !squareCorners;
+    document.documentElement.classList.toggle('square-corners', squareCorners);
+    sqRow.classList.toggle('on', squareCorners);
+    sqRow.querySelector('.switch').classList.toggle('on', squareCorners);
+  });
+  // tooltip delay slider + number box, synced both ways (+ accent fill like the drawer sliders)
+  const delayRange = contentEl.querySelector('#tooltipDelayRange');
+  const delayNum = contentEl.querySelector('#tooltipDelayNum');
+  const paintDelay = ()=>{
+    const pct = (parseFloat(delayRange.value)/2000)*100;
+    delayRange.style.background = `linear-gradient(to right, var(--accent) 0%, var(--accent) ${pct}%, var(--row) ${pct}%, var(--row) 100%)`;
+  };
+  paintDelay();
+  delayRange.addEventListener('input', ()=>{
+    tooltipDelay = parseInt(delayRange.value);
+    delayNum.value = tooltipDelay;
+    paintDelay();
+  });
+  delayNum.addEventListener('input', ()=>{
+    const v = parseInt(delayNum.value);
+    if(!isNaN(v)){ tooltipDelay = Math.min(2000, Math.max(0, v)); delayRange.value = tooltipDelay; paintDelay(); }
+  });
+  delayNum.addEventListener('change', ()=>{
+    tooltipDelay = Math.min(2000, Math.max(0, Math.round(parseInt(delayNum.value)||0)));
+    delayNum.value = tooltipDelay; delayRange.value = tooltipDelay; paintDelay();
+  });
+  const bindBtn = contentEl.querySelector('#searchBind');
+  const startListening = ()=>{
+    if(bindBtn.classList.contains('listening')) return;
+    bindBtn.classList.add('listening');
+    bindBtn.textContent = '…';
+    captureKey('Search', (key)=>{
+      bindBtn.classList.remove('listening');
+      if(key) searchKeybind = key;
+      bindBtn.textContent = key || searchKeybind;
+    });
+  };
+  bindBtn.addEventListener('click', startListening);
+  bindBtn.addEventListener('mousedown', (e)=>{
+    if(e.button === 1){ e.preventDefault(); startListening(); } // middle click also rebinds
+  });
+}
+
+const clientSettingsFields = [
+  {label:"Show Arraylist", value:true},
+  {label:"Show Keystrokes", value:true},
+  {label:"Show Notifications", value:true},
+  {label:"Custom Cape", value:false},
+  {label:"Discord Rich Presence", value:true}
+];
+function renderClientSettings(){
+  contentEl.innerHTML = `
+    <div class="settings-panel">
+      <div class="settings-header" id="backBtn"><span class="back-arrow"><i data-lucide="arrow-left"></i></span> Client Settings</div>
+      <div>${clientSettingsFields.map((f,i)=>`
+        <div class="toggle-row ${f.value?'on':''}" data-idx="${i}"><span class="toggle-label">${f.label}</span><div class="switch ${f.value?'on':''}" data-idx="${i}"></div></div>
+      `).join('')}</div>
+    </div>`;
+  document.getElementById('backBtn').addEventListener('click', ()=>{ state.topTab='home'; render(); });
+  refreshIcons();
+  clientSettingsFields.forEach((f,i)=>{
+    const el = contentEl.querySelector(`.switch[data-idx="${i}"]`);
+    const row = el.closest('.toggle-row');
+    row.addEventListener('click', ()=>{ f.value=!f.value; el.classList.toggle('on', f.value); row.classList.toggle('on', f.value); });
+  });
+}
+
+function searchRowHTML({mod,cat,idx}){
+  return `
+  <div class="module-row ${mod.enabled?'enabled':''}" draggable="true" data-cat="${cat}" data-idx="${idx}">
+    <div class="mod-icon"><i data-lucide="${mod.icon}"></i></div>
+    <div class="mod-text"><span class="mod-name">${mod.name}</span></div>
+    ${mod.favorite?'<i data-lucide="star" class="fav-mark"></i>':''}
+    ${mod.bind?`<span class="mod-bind">${mod.bind}</span>`:''}
+    <span class="mod-bind">${cat}</span>
+  </div>`;
+}
+
+function settingsRowHTML(item){
+  return `
+  <div class="module-row settings-result" data-tab="${item.tab}" data-name="${item.name}">
+    <div class="mod-icon"><i data-lucide="${item.icon}"></i></div>
+    <div class="mod-text"><span class="mod-name">${item.name}</span></div>
+    <span class="mod-bind">${item.tag}</span>
+  </div>`;
+}
+
+function searchItems(){
+  return [
+    {name:'Primary Color', icon:'palette', tab:'gui', tag:'GUI'},
+    {name:'Default Tab', icon:'app-window', tab:'gui', tag:'GUI'},
+    {name:'Search Keybind', icon:'keyboard', tab:'gui', tag:'GUI'},
+    ...clientSettingsFields.map(f=>({name:f.label, icon:'settings', tab:'clientsettings', tag:'Client'}))
+  ];
+}
+
+function updateSearchResults(){
+  const input = document.getElementById('tabSearchInput');
+  const resEl = document.getElementById('searchResults');
+  if(!input || !resEl) return;
+  state.query = input.value;
+  const q = state.query.toLowerCase();
+  // build the full result list ONCE per search session; afterwards we only
+  // toggle row visibility — no innerHTML rebuilds, so nothing can flicker
+  if(resEl.dataset.built !== '1'){
+    resEl.innerHTML =
+      allModulesFlat().map(searchRowHTML).join('') +
+      searchItems().map(settingsRowHTML).join('');
+    attachRowEvents(resEl);
+    resEl.querySelectorAll('.settings-result').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        state.searching = false;
+        state.openModule = null;
+        state.topTab = el.dataset.tab;
+        render();
+      });
+    });
+    refreshIcons();
+    resEl.dataset.built = '1';
+  }
+  const modKeys = new Set();
+  allModulesFlat().forEach(({mod,cat,idx})=>{
+    if(mod.name.toLowerCase().includes(q)) modKeys.add(cat+':'+idx);
+  });
+  const itemNames = new Set(
+    searchItems().filter(i=>i.name.toLowerCase().includes(q)).map(i=>i.name)
+  );
+  const total = modKeys.size + itemNames.size;
+  const countEl = document.getElementById('searchCount');
+  if(countEl) countEl.textContent = `${total} result${total===1?'':'s'}`;
+  const clearBtn = document.getElementById('tabSearchClear');
+  if(clearBtn) clearBtn.style.display = state.query ? '' : 'none';
+  const emptyEl = document.getElementById('searchEmpty');
+  if(emptyEl) emptyEl.style.display = total===0 ? '' : 'none';
+  resEl.querySelectorAll('.module-row').forEach(row=>{
+    const isModule = row.dataset.cat !== undefined;
+    const visible = isModule
+      ? modKeys.has(row.dataset.cat+':'+row.dataset.idx)
+      : itemNames.has(row.dataset.name);
+    row.style.display = visible ? '' : 'none';
+  });
+}
+// wired once — the tab-search bar is static HTML, not re-rendered
+document.getElementById('tabSearchInput').addEventListener('input', updateSearchResults);
+document.getElementById('tabSearchClear').addEventListener('click', ()=>{
+  const input = document.getElementById('tabSearchInput');
+  input.value = '';
+  updateSearchResults();
+  input.focus();
+});
+
+function render(){
+  renderTabs();
+  renderSidebar();
+  guiTabsEl.classList.toggle('searching', state.searching);
+  contentEl.classList.remove('content-anim');
+
+  // content-sized screens: don't force the row-count height formula
+  const compact = state.topTab==='clientsettings' || state.topTab==='configs' || state.topTab==='gui';
+  guiBodyEl.classList.toggle('auto-height', compact);
+  // module list views cap at --visible-rows and scroll beyond
+  const moduleList = state.topTab==='home' || state.topTab==='favorites' || state.searching;
+  guiBodyEl.classList.toggle('module-list', moduleList);
+  // compact tabs must never inherit a stale frozen height from the settings drawer
+  if(compact){
+    if(drawerAnimating) finishDrawerClose();
+    guiBodyEl.style.height = '';
+  }
+
+  // toggle settings drawer state FIRST so height calibration below measures the final layout
+  if(state.openModule){
+    renderSettings();
+    settingsDrawerEl.classList.add('open');
+    guiBodyEl.classList.add('settings-open');
+    guiWindowEl.classList.add('settings-open');
+    if(!guiBodyEl.style.height) guiBodyEl.style.height = guiBodyEl.getBoundingClientRect().height + 'px';
+  } else {
+    // full teardown so the closed drawer can never inflate the container
+    if(drawerAnimating) finishDrawerClose();
+    settingsDrawerEl.classList.remove('open');
+    guiBodyEl.classList.remove('settings-open');
+    guiWindowEl.classList.remove('settings-open');
+    settingsDrawerEl.querySelector('.settings-drawer-inner').style.display = 'none';
+    guiBodyEl.style.height = '';
+  }
+
+  if(state.topTab === 'clientsettings'){
+    renderClientSettings();
+  } else if(state.topTab === 'configs'){
+    renderConfigsScreen();
+  } else if(state.topTab === 'gui'){
+    renderGuiSettings();
+  } else if(state.searching){
+    contentEl.innerHTML = `<div class="search-count" id="searchCount"></div><div id="searchResults"></div><div class="empty-state" id="searchEmpty" style="display:none">No results</div>`;
+    const resEl = document.getElementById('searchResults');
+    delete resEl.dataset.built; // fresh build for this search session
+    const input = document.getElementById('tabSearchInput');
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    updateSearchResults();
+  } else if(state.topTab === 'favorites'){
+    const favs = allModulesFlat().filter(x=>x.mod.favorite);
+    renderModuleList(favs);
+  } else {
+    // home tab -> category module list
+    const list = modules[state.activeCat].map((mod,idx)=>({mod, cat:state.activeCat, idx}));
+    renderModuleList(list);
+  }
+
+  void contentEl.offsetWidth;
+  contentEl.classList.add('content-anim');
+  refreshIcons();
+}
+
+render();
+</script>
+</body>
+</html>

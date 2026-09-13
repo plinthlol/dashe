@@ -1101,7 +1101,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
             let noun = if total_files == 1 { "file" } else { "files" };
             eprintln!(
                 "{} fetching {} {} ({})",
-                style(console::Emoji("⇣", "<")).cyan(),
+                style("fetching").cyan(),
                 total_files,
                 noun,
                 HumanBytes(payload_size),
@@ -1163,7 +1163,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         }
         if let Some((name, _)) = collection.iter().next() {
             if let Some(first) = name.split('/').next() {
-                println!("{} exporting to {}", style(console::Emoji("→", ">")).cyan(), style(first).bold());
+                println!("{} {}", style("exporting to").cyan(), style(first).bold());
             }
         }
         export(&db, collection, &mut mp).await?;
@@ -1192,8 +1192,8 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     tokio::fs::remove_dir_all(iroh_data_dir).await?;
     let noun = if total_files == 1 { "file" } else { "files" };
     println!(
-        "{} received {} {} ({}) in {}",
-        style(console::Emoji("✔", "v")).green(),
+        "{} {} {} ({}) in {}",
+        style("received").green(),
         total_files,
         noun,
         HumanBytes(payload_size),
