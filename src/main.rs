@@ -16,7 +16,6 @@ use clap::{
     CommandFactory, Parser, Subcommand,
 };
 use console::style;
-use data_encoding::HEXLOWER;
 use futures_buffered::BufferedStreamExt;
 use indicatif::{
     HumanBytes, HumanDuration, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
@@ -46,8 +45,6 @@ use iroh_blobs::{
     BlobFormat, BlobsProtocol, Hash,
 };
 use n0_future::{task::AbortOnDropHandle, FuturesUnordered, StreamExt};
-use rand::RngExt;
-use serde::{Deserialize, Serialize};
 use tokio::{select, sync::mpsc};
 use tracing::{error, trace};
 use walkdir::WalkDir;
@@ -247,18 +244,7 @@ pub struct ReceiveArgs {
 }
 
 /// Options to configure what is included in a [`EndpointAddr`]
-#[derive(
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    Default,
-    Debug,
-    derive_more::Display,
-    derive_more::FromStr,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
 pub enum AddrInfoOptions {
     /// Only the Endpoint ID is added.
     ///
@@ -271,6 +257,33 @@ pub enum AddrInfoOptions {
     Relay,
     /// Includes the Endpoint ID and the direct addresses.
     Addresses,
+}
+
+impl Display for AddrInfoOptions {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id => f.write_str("id"),
+            Self::RelayAndAddresses => f.write_str("relay-and-addresses"),
+            Self::Relay => f.write_str("relay"),
+            Self::Addresses => f.write_str("addresses"),
+        }
+    }
+}
+
+impl FromStr for AddrInfoOptions {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().replace('_', "-").as_str() {
+            "id" => Ok(Self::Id),
+            "relay-and-addresses" => Ok(Self::RelayAndAddresses),
+            "relay" => Ok(Self::Relay),
+            "addresses" => Ok(Self::Addresses),
+            _ => Err(anyhow::anyhow!(
+                "invalid ticket type, expected id, relay, addresses or relay-and-addresses"
+            )),
+        }
+    }
 }
 
 fn apply_options(addr: &mut EndpointAddr, opts: AddrInfoOptions) {
@@ -383,7 +396,11 @@ async fn import(
     mp: &mut MultiProgress,
     jobs: Option<usize>,
 ) -> anyhow::Result<(TempTag, u64, Collection)> {
-    let parallelism = jobs.unwrap_or_else(num_cpus::get);
+    let parallelism = jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
     let path = path.canonicalize()?;
     anyhow::ensure!(path.exists(), "path {} does not exist", path.display());
     let root = path.parent().context("context get parent")?;
@@ -702,9 +719,10 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     }
 
     // use a flat store - todo: use a partial in mem store instead
-    let suffix = rand::rng().random::<[u8; 16]>();
+    // random suffix from the crypto RNG already in the tree (no rand dep needed)
+    let suffix = SecretKey::generate().to_bytes();
     let cwd = std::env::current_dir()?;
-    let blobs_data_dir = cwd.join(format!(".dashe-send-{}", HEXLOWER.encode(&suffix)));
+    let blobs_data_dir = cwd.join(format!(".dashe-send-{}", hex::encode(&suffix[..16])));
     if blobs_data_dir.exists() {
         println!(
             "can not share twice from the same directory: {}",
