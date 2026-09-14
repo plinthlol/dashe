@@ -77,13 +77,16 @@
     white-space: pre-wrap; word-break: break-all;
   }
   .dl .copy {
-    font-family: inherit; font-size: 11px;
+    display: none;
+    font-family: inherit;
     color: var(--dim); background: none;
     border: 1px solid var(--faint); border-radius: 4px;
-    padding: 3px 10px; cursor: pointer;
+    padding: 5px 7px 3px; cursor: pointer;
     transition: color 0.15s, border-color 0.15s;
   }
+  .dl details[open] .copy { display: flex; align-items: center; }
   .dl .copy:hover { color: var(--accent); border-color: var(--accent); }
+  .dl .copy.copied { color: var(--accent); border-color: var(--accent); }
   .dl-note { margin-top: 14px; font-size: 13px; color: var(--dim); }
   .dl-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
 
@@ -131,17 +134,17 @@
 
   <div class="dl">
     <details>
-      <summary>linux x86_64<button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh">copy</button></summary>
+      <summary>linux x86_64<button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></summary>
       <pre><span class="d"># in your terminal</span>
 <span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre>
     </details>
     <details>
-      <summary>macos apple silicon<button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh">copy</button></summary>
+      <summary>macos apple silicon<button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></summary>
       <pre><span class="d"># in your terminal</span>
 <span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre>
     </details>
     <details>
-      <summary>windows x86_64<button class="copy" data-cmd="irm https://plinthlol.github.io/dashe/install.ps1 | iex">copy</button></summary>
+      <summary>windows x86_64<button class="copy" data-cmd="irm https://plinthlol.github.io/dashe/install.ps1 | iex"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></summary>
       <pre><span class="d"># in powershell</span>
 <span class="g">$</span> irm https://plinthlol.github.io/dashe/install.ps1 | iex</pre>
     </details>
@@ -197,8 +200,13 @@ document.querySelectorAll(".copy").forEach(function (btn) {
     e.preventDefault();
     e.stopPropagation();
     navigator.clipboard.writeText(btn.dataset.cmd).then(function () {
-      btn.textContent = "copied";
-      setTimeout(function () { btn.textContent = "copy"; }, 1200);
+      btn.classList.add("copied");
+      var original = btn.innerHTML;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      setTimeout(function () {
+        btn.innerHTML = original;
+        btn.classList.remove("copied");
+      }, 1200);
     });
   });
 });
