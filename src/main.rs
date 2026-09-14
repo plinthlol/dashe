@@ -259,7 +259,12 @@ pub struct SendArgs {
 #[derive(Parser, Debug)]
 pub struct ReceiveArgs {
     /// The ticket to use to connect to the sender.
-    pub ticket: BlobTicket,
+    #[clap(conflicts_with = "scan")]
+    pub ticket: Option<BlobTicket>,
+
+    /// Discover senders on the local network and pick one interactively.
+    #[clap(long)]
+    pub scan: bool,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -873,12 +878,13 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     // Compress folders into a single tar.gz before sending, unless
     // --noarchive was given. The receiver unpacks it automatically.
     let archived = path.is_dir() && !args.noarchive;
+    let share_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .context("invalid path name")?
+        .to_string();
     let archive_file: Option<PathBuf> = if archived {
-        let folder_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .context("invalid folder name")?
-            .to_string();
+        let folder_name = share_name.clone();
         let archive_dir = std::env::temp_dir().join(format!("dashe-{}", hex::encode(&suffix[..8])));
         std::fs::create_dir_all(&archive_dir)?;
         let archive_path = archive_dir.join(format!("{folder_name}.tar.gz"));
@@ -959,6 +965,27 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let mut addr = router.endpoint().addr();
     apply_options(&mut addr, args.ticket_type);
     let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
+
+    // Announce the share on the local network (SHAREit-style beacons) so
+    // `dshe receive --scan` can find it without any ticket exchange.
+    {
+        let endpoint = router.endpoint();
+        let endpoint_id = endpoint.addr().id.to_string();
+        let addrs: Vec<std::net::SocketAddr> = endpoint
+            .addr()
+            .ip_addrs()
+            .copied()
+            .collect();
+        n0_future::task::spawn(announce_share_beacon(
+            endpoint_id,
+            addrs,
+            hash.to_hex().to_string(),
+            true,
+            size,
+            share_name.clone(),
+        ));
+    }
+
     let entry_type = if path.is_file() {
         "file"
     } else if archived {
@@ -1124,6 +1151,164 @@ fn add_to_clipboard(ticket: &BlobTicket) {
 
 const TICK_MS: u64 = 250;
 
+/// UDP port used for local-network sender discovery (SHAREit-style beacons).
+const BEACON_PORT: u16 = 51510;
+/// Multicast group for beacons (works alongside 255.255.255.255 broadcast).
+const BEACON_MULTICAST: std::net::Ipv4Addr = std::net::Ipv4Addr::new(239, 255, 43, 211);
+
+/// Periodically announce a running share on the local network.
+/// The packet carries everything a receiver needs to build a ticket:
+/// endpoint id, direct addresses, content hash, format, size and name.
+async fn announce_share_beacon(
+    endpoint_id: String,
+    addrs: Vec<std::net::SocketAddr>,
+    hash: String,
+    hash_seq: bool,
+    size: u64,
+    name: String,
+) -> anyhow::Result<()> {
+    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await?;
+    socket.set_broadcast(true)?;
+    let addr_list = addrs
+        .iter()
+        .map(|a| a.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let packet = format!(
+        "DSHE1|{endpoint_id}|{hash}|{}|{size}|{addr_list}|{name}",
+        u8::from(hash_seq),
+    );
+    let targets = [
+        (std::net::Ipv4Addr::BROADCAST, BEACON_PORT),
+        (BEACON_MULTICAST, BEACON_PORT),
+    ];
+    loop {
+        for target in targets {
+            let _ = socket.send_to(packet.as_bytes(), target).await;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[derive(Clone)]
+struct DiscoveredSender {
+    endpoint_id: String,
+    hash: String,
+    hash_seq: bool,
+    name: String,
+    size: u64,
+    addrs: Vec<std::net::SocketAddr>,
+}
+
+/// Listen for beacons for `duration` and return the discovered senders.
+async fn discover_senders(duration: Duration) -> anyhow::Result<Vec<DiscoveredSender>> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_broadcast(true)?;
+    socket
+        .bind(&std::net::SocketAddr::from(([0, 0, 0, 0], BEACON_PORT)).into())?;
+    socket
+        .join_multicast_v4(&BEACON_MULTICAST, &std::net::Ipv4Addr::UNSPECIFIED)
+        .ok();
+    socket.set_nonblocking(true)?;
+    let socket = tokio::net::UdpSocket::from_std(std::net::UdpSocket::from(socket))?;
+
+    let mut buf = [0u8; 2048];
+    let mut found: BTreeMap<String, DiscoveredSender> = BTreeMap::new();
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        let Ok(Ok((len, _from))) =
+            tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await
+        else {
+            break; // scan window over
+        };
+        let Ok(text) = std::str::from_utf8(&buf[..len]) else {
+            continue;
+        };
+        let Some(rest) = text.strip_prefix("DSHE1|") else {
+            continue;
+        };
+        let mut parts = rest.splitn(6, '|');
+        let (Some(id), Some(hash), Some(format), Some(size), Some(addrs), Some(name)) =
+            (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        // Dedupe by endpoint id; a later beacon may know more addresses.
+        let entry = found
+            .entry(id.to_string())
+            .or_insert_with(|| DiscoveredSender {
+                endpoint_id: id.to_string(),
+                hash: hash.to_string(),
+                hash_seq: format == "1",
+                name: name.to_string(),
+                size: size.parse().unwrap_or(0),
+                addrs: Vec::new(),
+            });
+        for a in addrs.split(',') {
+            if let Ok(sa) = a.parse::<std::net::SocketAddr>() {
+                if !entry.addrs.contains(&sa) {
+                    entry.addrs.push(sa);
+                }
+            }
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+/// Scan the local network and let the user pick a sender.
+async fn scan_and_pick() -> anyhow::Result<BlobTicket> {
+    println!("scanning the local network for senders...");
+    let senders = discover_senders(Duration::from_secs(5)).await?;
+    if senders.is_empty() {
+        anyhow::bail!(
+            "no senders found on the local network (is someone running `dshe send` on this network?)"
+        );
+    }
+    for (i, s) in senders.iter().enumerate() {
+        let from = s
+            .addrs
+            .first()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_else(|| "?".to_string());
+        println!(
+            "  [{}] {} ({}) from {}",
+            i + 1,
+            style(&s.name).bold(),
+            HumanBytes(s.size),
+            from,
+        );
+    }
+    print!("pick a sender (1-{}): ", senders.len());
+    use std::io::Write as _;
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let pick: usize = line.trim().parse().context("invalid pick")?;
+    let sender = senders
+        .get(pick.checked_sub(1).context("invalid pick")?)
+        .context("invalid pick")?;
+    let mut addr = EndpointAddr::new(
+        sender
+            .endpoint_id
+            .parse()
+            .context("invalid endpoint id in beacon")?,
+    );
+    for sa in &sender.addrs {
+        addr.addrs.insert(TransportAddr::Ip(*sa));
+    }
+    let format = if sender.hash_seq {
+        BlobFormat::HashSeq
+    } else {
+        BlobFormat::Raw
+    };
+    let hash: Hash = sender.hash.parse().context("invalid hash in beacon")?;
+    Ok(BlobTicket::new(addr, hash, format))
+}
+
 /// Files smaller than this don't get their own import progress bar —
 /// they finish too fast and the bar just flashes.
 const MIN_IMPORT_BAR_BYTES: u64 = 8 * 1024 * 1024;
@@ -1254,7 +1439,11 @@ fn show_get_error(e: GetError) -> GetError {
 }
 
 async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
-    let ticket = args.ticket;
+    let ticket = match args.ticket {
+        Some(ticket) => ticket,
+        None if args.scan => scan_and_pick().await?,
+        None => anyhow::bail!("provide a ticket, or use --scan to find senders on this network"),
+    };
     let addr = ticket.addr().clone();
     let secret_key = get_or_create_secret(args.common.verbose > 0)?;
     let mut builder = Endpoint::builder(presets::N0)
