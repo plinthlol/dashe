@@ -1760,6 +1760,12 @@ fn confirm_send(path: &Path) -> anyhow::Result<bool> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Dynamic shell completions: if the shell profile set COMPLETE=<shell>,
+    // print the completion hook instead of running normally.
+    clap_complete::CompleteEnv::with_factory(|| Args::command())
+        .completer("dshe")
+        .complete();
+
     tracing_subscriber::fmt::init();
     let args = match Args::try_parse() {
         Ok(args) => args,
