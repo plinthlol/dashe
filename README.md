@@ -83,6 +83,14 @@ $ dshe receive <ticket> ~/somewhere
 | `--debug` | show the content hash, per-file listing and import speed |
 | `--relay <url\|disabled>` | pick a relay server, or go fully offline (LAN-only) |
 
+## no installer? use the browser
+
+open [plinthlol.github.io/dashe/web](https://plinthlol.github.io/dashe/web/),
+pick a file, share the link. the receiver downloads it straight from your
+browser — p2p over webrtc, nothing is uploaded to a server. sender tab stays
+open until they have it. needs internet for the handshake (webrtc signaling);
+the file itself moves directly between browsers.
+
 ## how it works, roughly
 
 senders announce themselves with a tiny UDP beacon on the local network every

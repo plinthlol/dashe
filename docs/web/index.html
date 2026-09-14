@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dshe — web share</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0a0a; --fg: #d4d4d4; --dim: #6b6b6b;
+    --faint: #2a2a2a; --accent: #7aa2f7; --accent-dim: #7aa2f722;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 14px; line-height: 1.7;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 48px 24px; }
+  .logo { font-size: 15px; font-weight: 500; color: var(--dim); }
+  .logo b { color: var(--accent); font-weight: 500; }
+  h1 { font-size: 1.3rem; font-weight: 700; margin: 28px 0 18px; }
+  p.dim { color: var(--dim); }
+  .drop {
+    border: 1px dashed var(--faint); border-radius: 6px;
+    padding: 36px 20px; text-align: center; cursor: pointer;
+    transition: border-color 0.15s; margin: 16px 0;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); }
+  .drop .pick { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+  input[type=file] { display: none; }
+  pre {
+    background: #101010; border: 1px solid var(--faint); border-radius: 6px;
+    padding: 14px 16px; overflow-x: auto; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; margin: 14px 0;
+  }
+  .copy {
+    font-family: inherit; font-size: 11px; color: var(--dim); background: none;
+    border: 1px solid var(--faint); border-radius: 4px; padding: 4px 10px;
+    cursor: pointer; transition: color 0.15s, border-color 0.15s;
+  }
+  .copy:hover { color: var(--accent); border-color: var(--accent); }
+  .bar {
+    height: 8px; background: var(--faint); border-radius: 4px;
+    overflow: hidden; margin: 12px 0 6px;
+  }
+  .bar div {
+    height: 100%; width: 0%; background: var(--accent);
+    border-radius: 4px; transition: width 0.2s;
+  }
+  .stat { color: var(--dim); font-size: 12px; }
+  .ok { color: var(--accent); }
+  .err { color: #f7768e; }
+  a.btn {
+    display: inline-block; margin-top: 14px; padding: 12px 32px;
+    border: 1px solid var(--faint); border-radius: 6px;
+    color: var(--fg); text-decoration: none; cursor: pointer;
+  }
+  a.btn:hover { border-color: var(--accent); color: var(--accent); }
+  .hidden { display: none; }
+  #qr { margin-top: 14px; background: #fff; padding: 8px; border-radius: 6px; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">dshe<b>~</b> web share</div>
+
+  <!-- share mode -->
+  <div id="share-mode">
+    <h1>share a file</h1>
+    <p class="dim">pick a file, get a link. the file goes directly from your browser to the receiver — never uploaded anywhere. keep this tab open until they have it.</p>
+    <label class="drop" id="drop">
+      <span>drop a file here or <span class="pick">pick one</span></span>
+      <input type="file" id="file">
+    </label>
+    <div id="share-status"></div>
+    <div id="linkbox" class="hidden">
+      <p class="dim">share this link:</p>
+      <pre id="link"></pre>
+      <button class="copy" id="copylink">copy link</button>
+      <div id="qr"></div>
+      <div class="bar"><div id="send-bar"></div></div>
+      <div class="stat" id="send-stat"></div>
+    </div>
+  </div>
+
+  <!-- receive mode -->
+  <div id="recv-mode" class="hidden">
+    <h1>incoming file</h1>
+    <div id="recv-status"></div>
+    <div class="bar"><div id="recv-bar"></div></div>
+    <div class="stat" id="recv-stat"></div>
+    <a class="btn hidden" id="save" download>save file</a>
+  </div>
+
+  <p class="dim" style="margin-top:56px">p2p, encrypted (dtls), no uploads to any server. the handshake runs through peerjs's public broker; the file itself moves directly between browsers. needs internet for the handshake.</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const human = (n) => {
+  if (n < 1024) return n + " B";
+  const u = ["KiB", "MiB", "GiB"];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(1) + " " + u[i];
+};
+const CHUNK = 16 * 1024;
+const HIGH_WATER = 1024 * 1024;
+
+// ---------------- receive mode ----------------
+const token = location.hash.slice(1).trim();
+if (token) {
+  $("share-mode").classList.add("hidden");
+  $("recv-mode").classList.remove("hidden");
+  receive(token);
+}
+
+async function receive(id) {
+  $("recv-status").innerHTML = "connecting...";
+  const peer = new Peer();
+  peer.on("error", (e) => {
+    $("recv-status").innerHTML =
+      `<span class="err">${e.type === "peer-unavailable" ? "the sender is offline or the link is stale" : "error: " + e.type}</span>`;
+  });
+  peer.on("open", () => {
+    const conn = peer.connect(id, { reliable: true });
+    let meta = null, chunks = [], got = 0;
+
+    conn.on("open", () => { $("recv-status").innerHTML = "waiting for the file..."; });
+    conn.on("data", (data) => {
+      if (!meta) {
+        meta = JSON.parse(data);
+        $("recv-status").innerHTML =
+          `<span class="ok">${meta.name}</span> — ${human(meta.size)}`;
+        return;
+      }
+      if (typeof data === "string") return; // ignore control messages
+      chunks.push(data);
+      got += data.byteLength;
+      const pct = meta.size ? Math.floor((got / meta.size) * 100) : 100;
+      $("recv-bar").style.width = pct + "%";
+      $("recv-stat").textContent = `${human(got)} / ${human(meta.size)}`;
+      if (got >= meta.size) finish();
+    });
+    conn.on("error", (e) => {
+      $("recv-status").innerHTML = `<span class="err">connection error: ${e}</span>`;
+    });
+
+    function finish() {
+      const blob = new Blob(chunks);
+      const url = URL.createObjectURL(blob);
+      const a = $("save");
+      a.href = url;
+      a.download = meta.name;
+      a.classList.remove("hidden");
+      $("recv-status").innerHTML =
+        `<span class="ok">done — ${meta.name} (${human(meta.size)})</span>`;
+      a.click(); // try to auto-save; button stays as fallback
+    }
+  });
+}
+
+// ---------------- share mode ----------------
+let file = null;
+const drop = $("drop");
+
+drop.addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", (e) => {
+  if (e.target.files.length) startShare(e.target.files[0]);
+});
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  if (e.dataTransfer.files.length) startShare(e.dataTransfer.files[0]);
+});
+
+function status(html) { $("share-status").innerHTML = html; }
+
+async function startShare(f) {
+  file = f;
+  status(`picked <span class="ok">${f.name}</span> (${human(f.size)}) — connecting...`);
+  $("linkbox").classList.add("hidden");
+
+  const peer = new Peer();
+  peer.on("error", (e) => {
+    status(`<span class="err">error: ${e.type}</span> — try again`);
+  });
+  peer.on("open", (id) => {
+    const link = location.origin + location.pathname + "#" + id;
+    $("linkbox").classList.remove("hidden");
+    $("link").textContent = link;
+    $("copylink").onclick = () => {
+      navigator.clipboard.writeText(link).then(() => {
+        $("copylink").textContent = "copied";
+        setTimeout(() => ($("copylink").textContent = "copy link"), 1200);
+      });
+    };
+    QRCode.toCanvas(qrCanvas(), link, { width: 148, margin: 1 });
+    status("waiting for the receiver to open the link...");
+  });
+  peer.on("connection", (conn) => {
+    status(`<span class="ok">receiver connected — sending ${f.name}...</span>`);
+    conn.on("open", async () => {
+      conn.send(JSON.stringify({ name: f.name, size: f.size }));
+      let sent = 0, offset = 0;
+      const t0 = Date.now();
+      while (offset < f.size) {
+        const slice = f.slice(offset, offset + CHUNK);
+        const buf = await slice.arrayBuffer();
+        conn.send(buf);
+        sent += buf.byteLength;
+        offset += CHUNK;
+        if (conn.dataChannel && conn.dataChannel.bufferedAmount > HIGH_WATER) {
+          await new Promise((res) => {
+            const check = () =>
+              conn.dataChannel.bufferedAmount < HIGH_WATER
+                ? res()
+                : setTimeout(check, 50);
+            check();
+          });
+        }
+        const pct = Math.floor((sent / f.size) * 100);
+        $("send-bar").style.width = pct + "%";
+        const secs = (Date.now() - t0) / 1000;
+        $("send-stat").textContent =
+          `${human(sent)} / ${human(f.size)} (${pct}%)`;
+      }
+      const secs = (Date.now() - t0) / 1000;
+      const rate = human(Math.floor(f.size / Math.max(secs, 0.1))) + "/s";
+      $("send-bar").style.width = "100%";
+      $("send-stat").innerHTML =
+        `<span class="ok">sent ${f.name} (${human(f.size)}) in ${secs.toFixed(1)}s, ${rate}</span>`;
+      status(`<span class="ok">transfer complete.</span> share the link again if someone else needs it.`);
+    });
+  });
+}
+
+function qrCanvas() {
+  let c = $("qr").querySelector("canvas");
+  if (!c) { c = document.createElement("canvas"); $("qr").appendChild(c); }
+  return c;
+}
+
+$("copylink").addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  navigator.clipboard.writeText($("link").textContent).then(() => {
+    e.target.textContent = "copied";
+    setTimeout(() => (e.target.textContent = "copy link"), 1200);
+  });
+});
+</script>
+</body>
+</html>
