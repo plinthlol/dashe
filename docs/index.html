@@ -76,7 +76,15 @@
     border-radius: 0 0 6px 6px;
     font-size: 11.5px; line-height: 1.9;
     white-space: pre; overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--faint) transparent;
   }
+  .dl details pre::-webkit-scrollbar { height: 5px; }
+  .dl details pre::-webkit-scrollbar-track { background: transparent; }
+  .dl details pre::-webkit-scrollbar-thumb {
+    background: var(--faint); border-radius: 3px;
+  }
+  .dl details pre::-webkit-scrollbar-thumb:hover { background: var(--dim); }
   .dl .copy {
     display: none;
     font-family: inherit;
