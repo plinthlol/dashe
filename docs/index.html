@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dashe — send files between machines, no cloud</title>
+<meta name="description" content="dshe is a CLI tool to send files and folders between machines over the local network or the internet. SHAREit-style LAN discovery, end-to-end encryption, blake3 verified streaming.">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --cyan: #39c5cf;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+  header { padding: 72px 0 48px; text-align: center; }
+  h1 {
+    font-size: 3.2rem;
+    font-family: var(--mono);
+    letter-spacing: -2px;
+  }
+  h1 span { color: var(--accent); }
+  .tagline { color: var(--dim); font-size: 1.25rem; margin-top: 8px; }
+  .buttons { margin-top: 28px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 10px 22px; border-radius: 8px;
+    text-decoration: none; font-weight: 600; border: 1px solid var(--border);
+  }
+  .btn.primary { background: var(--accent); color: #0d1117; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.ghost { color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent); }
+  h2 {
+    font-family: var(--mono); font-size: 1.4rem;
+    margin: 48px 0 16px; color: var(--accent);
+  }
+  p.dim { color: var(--dim); }
+  pre {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 20px; overflow-x: auto;
+    font-family: var(--mono); font-size: 0.88rem; line-height: 1.7;
+    margin: 12px 0;
+  }
+  .g { color: var(--green); } .c { color: var(--cyan); } .d { color: var(--dim); }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px; margin-top: 16px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 18px;
+  }
+  .card b { color: var(--cyan); font-family: var(--mono); }
+  .card p { color: var(--dim); font-size: 0.92rem; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-family: var(--mono); font-size: 0.88rem; }
+  td { border: 1px solid var(--border); padding: 8px 12px; }
+  td:first-child { color: var(--green); white-space: nowrap; }
+  footer {
+    margin-top: 72px; padding: 28px 0; border-top: 1px solid var(--border);
+    color: var(--dim); font-size: 0.9rem; text-align: center;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <h1>dshe<span>~</span></h1>
+  <p class="tagline">Send files between machines. No cloud, no accounts, no cables.</p>
+  <div class="buttons">
+    <a class="btn primary" href="https://github.com/plinthlol/dashe/releases/latest">Download latest</a>
+    <a class="btn ghost" href="https://github.com/plinthlol/dashe">Source on GitHub</a>
+  </div>
+</header>
+
+<main class="wrap">
+  <h2>quickstart</h2>
+  <pre><span class="c"># machine A — sender (announces itself on the LAN)</span>
+$ dshe send myfolder
+<span class="g">imported folder (compressed) myfolder (977.14 KiB)</span>
+
+  <span class="d">dshe</span> receive blobav3vanxqbcbyn7a46lqimpk47utzp7wnuu...
+
+<span class="c"># machine B — receiver. no ticket? just scan the LAN:</span>
+$ dshe receive --scan
+<span class="c">fetching</span> 1 file (488.70 KiB)
+  downloading [██████████████░░░░░░] 45.2 MiB/190.7 MiB (7s left)
+<span class="g">received myfolder (977.14 KiB) in 3s</span></pre>
+
+  <h2>why dshe</h2>
+  <div class="grid">
+    <div class="card"><b>verified streaming</b><p>Every chunk is verified against a blake3 hash baked into the ticket. Corrupted or tampered data is mathematically impossible to miss.</p></div>
+    <div class="card"><b>p2p, encrypted</b><p>Direct connections with NAT hole punching over QUIC. Relay fallback when the network is hostile. End-to-end encrypted either way.</p></div>
+    <div class="card"><b>SHAREit-style discovery</b><p>Senders announce themselves on the LAN. <code>dshe receive --scan</code> lists them. No ticket needed — works with the router unplugged.</p></div>
+    <div class="card"><b>one-shot by default</b><p>The sender exits on its own after the first receiver completes. <code>--nostop</code> serves forever, <code>--bg</code> runs in the background.</p></div>
+    <div class="card"><b>folders, compressed</b><p>Directories are packed into a single tar.gz, sent as one blob, and unpacked on the other side. <code>--noarchive</code> to skip.</p></div>
+    <div class="card"><b>small &amp; fast</b><p>A ~4 MB static binary per platform. No runtime, no dependencies, no installer.</p></div>
+  </div>
+
+  <h2>flags you'll actually use</h2>
+  <table>
+    <tr><td>--scan</td><td>discover nearby senders and pick one</td></tr>
+    <tr><td>--qr</td><td>show the receive command as a scannable QR code</td></tr>
+    <tr><td>--bg / --bg-stop</td><td>serve in the background (forever / until first transfer)</td></tr>
+    <tr><td>--noarchive</td><td>send folders uncompressed</td></tr>
+    <tr><td>--nostop</td><td>keep the sender alive for multiple receivers</td></tr>
+    <tr><td>--resume</td><td>keep partial downloads so a retry can continue</td></tr>
+    <tr><td>--relay disabled</td><td>LAN-only mode, fully offline</td></tr>
+  </table>
+
+  <h2>the dead-router recipe</h2>
+  <p class="dim">Internet's gone, router's off, someone's in the same room:</p>
+  <pre><span class="c"># turn on a phone hotspot, both machines join it, then:</span>
+$ dshe send --qr ./stuff
+<span class="c"># ...point your phone at the screen, done.</span></pre>
+
+  <footer>
+    <p>dashe is a fork-flavored rewrite of the excellent <a href="https://github.com/n0-computer/sendme">sendme</a>, built on <a href="https://iroh.computer">iroh</a>.</p>
+    <p>Apache-2.0 / MIT</p>
+  </footer>
+</main>
+</body>
+</html>
