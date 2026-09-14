@@ -266,8 +266,35 @@ pub struct ReceiveArgs {
     #[clap(long)]
     pub scan: bool,
 
+    /// Keep the partial download cache after a failed or interrupted
+    /// transfer, so a retry can resume where it left off.
+    #[clap(long)]
+    pub resume: bool,
+
+    /// Directory to export the received files into.
+    ///
+    /// Created if it does not exist. Defaults to the current directory.
+    pub dest: Option<PathBuf>,
+
     #[clap(flatten)]
     pub common: CommonArgs,
+}
+
+/// Expand a leading `~` in a path to the user's home directory.
+fn expand_home(path: &Path) -> PathBuf {
+    let Some(str_path) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if str_path == "~" {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = str_path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    path.to_path_buf()
 }
 
 /// Options to configure what is included in a [`EndpointAddr`]
@@ -562,13 +589,17 @@ fn get_export_path(root: &Path, name: &str) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-async fn export(db: &Store, collection: Collection, mp: &mut MultiProgress) -> anyhow::Result<()> {
-    let root = std::env::current_dir()?;
+async fn export(
+    db: &Store,
+    collection: Collection,
+    mp: &mut MultiProgress,
+    root: &Path,
+) -> anyhow::Result<()> {
     let op = mp.add(make_export_overall_progress());
     op.set_length(collection.len() as u64);
     for (i, (name, hash)) in collection.iter().enumerate() {
         op.set_position(i as u64);
-        let target = get_export_path(&root, name)?;
+        let target = get_export_path(root, name)?;
         if target.exists() {
             eprintln!(
                 "target {} already exists. Export stopped.",
@@ -748,11 +779,11 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
 
     let suffix = SecretKey::generate().to_bytes();
-    let ticket_file = std::env::temp_dir().join(format!("dashe-ticket-{}.txt", hex::encode(&suffix[..8])));
+    let ticket_file =
+        std::env::temp_dir().join(format!("dashe-ticket-{}.txt", hex::encode(&suffix[..8])));
     let _ = std::fs::remove_file(&ticket_file);
 
-    let mut cmd = Command::new(std::env::current_exe()?
-    );
+    let mut cmd = Command::new(std::env::current_exe()?);
     cmd.args(std::env::args_os().skip(1))
         .env("DASHE_DAEMON", "1")
         .env("DASHE_TICKET_FILE", &ticket_file)
@@ -780,10 +811,7 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
 
-    println!(
-        "{}",
-        style(format!("dshe receive {ticket}")).bold(),
-    );
+    println!("{}", style(format!("dshe receive {ticket}")).bold(),);
     if args.qr {
         print_ticket_qr(&ticket)?;
     }
@@ -794,7 +822,10 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
     };
     println!(
         "{}",
-        style(format!("running in background (pid {pid}, {mode}; stop with: kill {pid}))")).dim(),
+        style(format!(
+            "running in background (pid {pid}, {mode}; stop with: kill {pid}))"
+        ))
+        .dim(),
     );
     Ok(())
 }
@@ -971,11 +1002,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     {
         let endpoint = router.endpoint();
         let endpoint_id = endpoint.addr().id.to_string();
-        let addrs: Vec<std::net::SocketAddr> = endpoint
-            .addr()
-            .ip_addrs()
-            .copied()
-            .collect();
+        let addrs: Vec<std::net::SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
         n0_future::task::spawn(announce_share_beacon(
             endpoint_id,
             addrs,
@@ -1217,8 +1244,7 @@ async fn discover_senders(duration: Duration) -> anyhow::Result<Vec<DiscoveredSe
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_broadcast(true)?;
-    socket
-        .bind(&std::net::SocketAddr::from(([0, 0, 0, 0], BEACON_PORT)).into())?;
+    socket.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], BEACON_PORT)).into())?;
     socket
         .join_multicast_v4(&BEACON_MULTICAST, &std::net::Ipv4Addr::UNSPECIFIED)
         .ok();
@@ -1230,8 +1256,7 @@ async fn discover_senders(duration: Duration) -> anyhow::Result<Vec<DiscoveredSe
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
         let timeout = deadline.saturating_duration_since(Instant::now());
-        let Ok(Ok((len, _from))) =
-            tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await
+        let Ok(Ok((len, _from))) = tokio::time::timeout(timeout, socket.recv_from(&mut buf)).await
         else {
             break; // scan window over
         };
@@ -1242,9 +1267,14 @@ async fn discover_senders(duration: Duration) -> anyhow::Result<Vec<DiscoveredSe
             continue;
         };
         let mut parts = rest.splitn(6, '|');
-        let (Some(id), Some(hash), Some(format), Some(size), Some(addrs), Some(name)) =
-            (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next())
-        else {
+        let (Some(id), Some(hash), Some(format), Some(size), Some(addrs), Some(name)) = (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) else {
             continue;
         };
         // Dedupe by endpoint id; a later beacon may know more addresses.
@@ -1347,8 +1377,6 @@ fn make_import_item_progress() -> ProgressBar {
     pb
 }
 
-
-
 fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
@@ -1403,7 +1431,11 @@ pub async fn show_download_progress(
         let dt = now.duration_since(last.1).as_secs_f64();
         if dt >= 0.5 {
             let inst = (pos.saturating_sub(last.0)) as f64 / dt;
-            rate = if rate == 0.0 { inst } else { rate * 0.7 + inst * 0.3 };
+            rate = if rate == 0.0 {
+                inst
+            } else {
+                rate * 0.7 + inst * 0.3
+            };
             last = (pos, now);
         }
         if rate > 0.0 {
@@ -1456,6 +1488,15 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
     };
     let addr = ticket.addr().clone();
     let secret_key = get_or_create_secret(args.common.verbose > 0)?;
+    // Destination directory for the received files.
+    let dest = match args.dest {
+        Some(dest) => {
+            let expanded = expand_home(&dest);
+            std::fs::create_dir_all(&expanded)?;
+            expanded.canonicalize()?
+        }
+        None => std::env::current_dir()?,
+    };
     let mut builder = Endpoint::builder(presets::N0)
         .alpns(vec![])
         .secret_key(secret_key)
@@ -1576,15 +1617,14 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                 .unwrap_or(&first_name)
                 .to_string()
         };
-        export(&db, collection, &mut mp).await?;
+        export(&db, collection, &mut mp, &dest).await?;
         if is_archive {
-            // Unpack the archive into the current directory and drop it.
-            let cwd = std::env::current_dir()?;
-            let archive_target = cwd.join(&first_name);
+            // Unpack the archive into the destination directory and drop it.
+            let archive_target = dest.join(&first_name);
             let file = std::fs::File::open(&archive_target)
                 .with_context(|| format!("open {}", archive_target.display()))?;
             let gz = flate2::read::GzDecoder::new(file);
-            tar::Archive::new(gz).unpack(&cwd)?;
+            tar::Archive::new(gz).unpack(&dest)?;
             std::fs::remove_file(&archive_target)?;
         }
         anyhow::Ok((root_name, total_files, payload_size, stats))
@@ -1599,6 +1639,11 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                 endpoint.close().await;
                 // make sure we shutdown the db before exiting
                 db2.shutdown().await?;
+                // without --resume the partial cache is deleted; with it the
+                // retry will pick up where this attempt left off
+                if !args.resume {
+                    let _ = tokio::fs::remove_dir_all(&iroh_data_dir).await;
+                }
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -1606,6 +1651,9 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
         _ = tokio::signal::ctrl_c() => {
             endpoint.close().await;
             db2.shutdown().await?;
+            if !args.resume {
+                let _ = tokio::fs::remove_dir_all(&iroh_data_dir).await;
+            }
             std::process::exit(130);
         }
     };
@@ -1632,11 +1680,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
 /// Ask the user whether to send the given path. Returns true for y/yes.
 /// In an interactive terminal, a single keypress is enough (no Enter).
 fn confirm_send(path: &Path) -> anyhow::Result<bool> {
-    anyhow::ensure!(
-        path.exists(),
-        "path {} does not exist",
-        path.display(),
-    );
+    anyhow::ensure!(path.exists(), "path {} does not exist", path.display(),);
     use std::io::{IsTerminal, Read, Write as _};
     print!("send {}? [y/N] ", path.display());
     std::io::stdout().flush()?;
@@ -1651,7 +1695,7 @@ fn confirm_send(path: &Path) -> anyhow::Result<bool> {
             disable_raw_mode()?;
             // Echo the pressed key since raw mode does not.
             if n == 1 && buf[0].is_ascii_graphic() {
-                print!("{}\n", buf[0] as char);
+                println!("{}", buf[0] as char);
             } else {
                 println!();
             }
@@ -1709,10 +1753,7 @@ async fn main() -> anyhow::Result<()> {
             }
             // Re-parse through clap so the defaults are applied.
             let path_str = path.as_os_str().to_str().context("invalid path")?;
-            Commands::Send(SendArgs::try_parse_from([
-                "dshe",
-                path_str,
-            ])?)
+            Commands::Send(SendArgs::try_parse_from(["dshe", path_str])?)
         }
     };
     let res = match command {
