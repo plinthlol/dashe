@@ -1308,6 +1308,24 @@ async fn scan_and_pick() -> anyhow::Result<BlobTicket> {
             "no senders found on the local network (is someone running `dshe send` on this network?)"
         );
     }
+    // A single sender means there's nothing to choose — connect directly.
+    if senders.len() == 1 {
+        let s = &senders[0];
+        println!(
+            "{}",
+            style(format!(
+                "found {} ({}) from {}",
+                s.name,
+                HumanBytes(s.size),
+                s.addrs
+                    .first()
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_else(|| "?".to_string()),
+            ))
+            .cyan(),
+        );
+        return build_ticket(s);
+    }
     for (i, s) in senders.iter().enumerate() {
         let from = s
             .addrs
@@ -1331,6 +1349,11 @@ async fn scan_and_pick() -> anyhow::Result<BlobTicket> {
     let sender = senders
         .get(pick.checked_sub(1).context("invalid pick")?)
         .context("invalid pick")?;
+    build_ticket(sender)
+}
+
+/// Build a ticket from a discovered sender's beacon data.
+fn build_ticket(sender: &DiscoveredSender) -> anyhow::Result<BlobTicket> {
     let mut addr = EndpointAddr::new(
         sender
             .endpoint_id
