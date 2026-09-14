@@ -981,16 +981,13 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
 
     // Exit after the first complete transfer, or on Ctrl-C.
     // With --nostop or --bg the sender keeps running until killed manually.
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
-        _ = done_rx.recv(), if !args.nostop && !args.bg => {
-            println!("{}", style("transfer complete").green());
-        }
-    }
+    let complete = tokio::select! {
+        _ = tokio::signal::ctrl_c() => false,
+        _ = done_rx.recv(), if !args.nostop && !args.bg => true,
+    };
 
     drop(temp_tag);
 
-    println!("shutting down");
     tokio::time::timeout(Duration::from_secs(2), router.shutdown()).await??;
     tokio::fs::remove_dir_all(blobs_data_dir).await?;
     if let Some(archive_path) = &archive_file {
@@ -1001,8 +998,11 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     }
     // drop everything that owns blobs to close the progress sender
     drop(router);
-    // await progress completion so the progress bar is cleared
+    // await progress completion so the progress bars are cleared first
     progress.await.ok();
+    if complete {
+        println!("{}", style("transfer complete").green());
+    }
 
     Ok(())
 }
