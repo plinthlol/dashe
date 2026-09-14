@@ -1032,7 +1032,17 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "clipboard")]
-    handle_key_press(args.clipboard, ticket);
+    {
+        if args.qr {
+            // No key listener with --qr (nothing to hint about); still honor
+            // an explicit --clipboard request, just without the prompt.
+            if args.clipboard {
+                add_to_clipboard(&ticket);
+            }
+        } else {
+            handle_key_press(args.clipboard, ticket);
+        }
+    }
 
     // Exit after the first complete transfer, or on Ctrl-C.
     // With --nostop or --bg the sender keeps running until killed manually.
