@@ -214,6 +214,12 @@ pub struct SendArgs {
     #[clap(long)]
     pub qr: bool,
 
+    /// Share over the local network via a browser: serves a download page
+    /// and prints its link (plus a QR code), so any device with a browser
+    /// can download without installing dshe.
+    #[clap(long)]
+    pub web: bool,
+
     /// keep the sender running after the first receiver finishes.
     #[clap(long)]
     pub nostop: bool,
@@ -786,7 +792,7 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
 
     println!("{}", style(format!("dshe receive {ticket}")).bold(),);
     if args.qr {
-        print_ticket_qr(&ticket)?;
+        print_qr(&format!("dshe receive {ticket}"))?;
     }
     let mode = if args.bg_stop {
         "stops automatically after the first transfer"
@@ -803,11 +809,11 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// print the receive command as a qr code. colors are inverted so it
+/// print any string as a qr code. colors are inverted so it
 /// scans on dark terminals.
-fn print_ticket_qr(ticket: &str) -> anyhow::Result<()> {
+fn print_qr(content: &str) -> anyhow::Result<()> {
     use qrcode::render::unicode::Dense1x2;
-    let code = qrcode::QrCode::new(format!("dshe receive {ticket}"))?;
+    let code = qrcode::QrCode::new(content)?;
     let qr = code
         .render::<Dense1x2>()
         .dark_color(Dense1x2::Light)
@@ -818,6 +824,88 @@ fn print_ticket_qr(ticket: &str) -> anyhow::Result<()> {
     println!("{qr}");
     println!();
     Ok(())
+}
+
+/// serve a minimal download page + the file over plain http on the lan.
+async fn serve_web_page(
+    listener: tokio::net::TcpListener,
+    file: PathBuf,
+    name: String,
+    size: u64,
+    done: mpsc::Sender<()>,
+) -> anyhow::Result<()> {
+    loop {
+        let (mut sock, _) = listener.accept().await?;
+        let file = file.clone();
+        let name = name.clone();
+        let done = done.clone();
+        n0_future::task::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut buf = vec![0u8; 2048];
+            let n = tokio::io::AsyncReadExt::read(&mut sock, &mut buf)
+                .await
+                .unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+
+            if path != "/download" {
+                let page = build_share_page(&name, size);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    page.len(),
+                    page
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                return;
+            }
+
+            let Ok(f) = tokio::fs::File::open(&file).await else {
+                let _ = sock
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                return;
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"{name}\"\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+            );
+            if sock.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let mut f = f;
+            let _ = tokio::io::copy(&mut f, &mut sock).await;
+            let _ = sock.shutdown().await;
+            // a completed download counts as a complete send
+            let _ = done.try_send(());
+        });
+    }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn build_share_page(name: &str, size: u64) -> String {
+    let name = html_escape(name);
+    let human = HumanBytes(size);
+    format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>dshe — {name}</title><style>
+body {{ background:#0a0a0a; color:#d4d4d4; font-family:ui-monospace,Menlo,Consolas,monospace; display:flex; min-height:100vh; align-items:center; justify-content:center; }}
+.wrap {{ text-align:center; padding:24px; }}
+.brand {{ color:#7aa2f7; letter-spacing:1px; }}
+h1 {{ font-size:1.6rem; margin:18px 0 6px; word-break:break-all; }}
+p {{ color:#6b6b6b; margin-bottom:28px; }}
+a.btn {{ display:inline-block; padding:14px 36px; border:1px solid #2a2a2a; border-radius:6px; color:#d4d4d4; text-decoration:none; font-family:inherit; font-size:1rem; }}
+a.btn:hover {{ border-color:#7aa2f7; color:#7aa2f7; }}
+</style></head><body><div class="wrap">
+<p class="brand">dshe~</p>
+<h1>{name}</h1>
+<p>{human} — shared with dshe</p>
+<a class="btn" href="/download">download</a>
+</div></body></html>"#
+    )
 }
 
 async fn send(args: SendArgs) -> anyhow::Result<()> {
@@ -910,6 +998,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     let blobs_data_dir2 = blobs_data_dir.clone();
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
+    let web_done_tx = done_tx.clone();
     let progress = AbortOnDropHandle::new(n0_future::task::spawn(show_provide_progress(
         mp2,
         progress_rx,
@@ -986,6 +1075,40 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
         ));
     }
 
+    // browser sharing: serve a download page on the lan
+    let mut web_url: Option<String> = None;
+    if args.web {
+        let (serve_path, download_name) = if let Some(a) = &archive_file {
+            (a.clone(), format!("{share_name}.tar.gz"))
+        } else if path.is_file() {
+            (path.clone(), share_name.clone())
+        } else {
+            anyhow::bail!(
+                "folders are compressed for browser sharing — drop --noarchive when using --web"
+            );
+        };
+        let listener = match tokio::net::TcpListener::bind("0.0.0.0:51511").await {
+            Ok(l) => l,
+            Err(_) => tokio::net::TcpListener::bind("0.0.0.0:0").await?,
+        };
+        let port = listener.local_addr()?.port();
+        let ip = router
+            .endpoint()
+            .addr()
+            .ip_addrs()
+            .map(|sa| sa.ip())
+            .find(|ip| !ip.is_loopback() && !ip.is_unspecified())
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        web_url = Some(format!("http://{ip}:{port}"));
+        n0_future::task::spawn(serve_web_page(
+            listener,
+            serve_path,
+            download_name,
+            size,
+            web_done_tx,
+        ));
+    }
+
     let entry_type = if path.is_file() {
         "file"
     } else if archived {
@@ -1022,13 +1145,23 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
         style(format!("receive {ticket}")).bold(),
     );
 
+    if let Some(url) = &web_url {
+        println!();
+        println!(
+            "  {} {}",
+            style("or open in any browser:").dim(),
+            style(url).cyan(),
+        );
+        print_qr(url)?;
+    }
+
     // Hand the ticket to the foreground process that spawned us.
     if let Ok(ticket_file) = std::env::var("DASHE_TICKET_FILE") {
         let _ = std::fs::write(&ticket_file, ticket.to_string());
     }
 
     if args.qr {
-        print_ticket_qr(&ticket.to_string())?;
+        print_qr(&format!("dshe receive {ticket}"))?;
     }
 
     #[cfg(feature = "clipboard")]
