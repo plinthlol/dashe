@@ -31,9 +31,19 @@
   .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
 
   /* header */
-  header { padding: 110px 0 80px; }
-  h1 { font-size: 15px; font-weight: 500; letter-spacing: 0.5px; color: var(--accent); }
-  h1::before { content: "▌ "; color: var(--accent); }
+  header { padding: 96px 0 80px; }
+  .logo {
+    font-size: 15px; font-weight: 500; letter-spacing: 0.5px; color: var(--dim);
+    display: inline-block; border: 1px solid var(--faint); border-radius: 6px;
+    padding: 8px 14px; margin-bottom: 40px;
+  }
+  .logo b { color: var(--accent); font-weight: 500; }
+  .cursor {
+    display: inline-block; width: 9px; height: 18px;
+    background: var(--accent); margin-left: 6px; vertical-align: text-bottom;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
   h2 {
     font-size: 13px; font-weight: 500; letter-spacing: 2px;
     text-transform: uppercase; color: var(--dim);
@@ -61,6 +71,8 @@
   .dl a .os::before { content: "▸ "; color: var(--accent); }
   .dl a .size { color: var(--dim); font-size: 12px; }
   .dl-note { margin-top: 14px; font-size: 13px; color: var(--dim); }
+  .install pre { margin-top: 24px; }
+  .install pre .d { user-select: all; }
   .dl-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
 
   /* code */
@@ -101,9 +113,17 @@
 <div class="wrap">
 
 <header>
-  <h1>dashe</h1>
-  <div class="hero">send files like<br><em>it's 2015</em> — minus<br>the ads.</div>
+  <div class="logo">dshe<b>~</b><span class="cursor"></span></div>
+  <div class="hero">files, straight<br>from terminal<br><em>to terminal.</em></div>
   <p class="sub">p2p file transfer between machines over LAN or the internet. encrypted end-to-end, blake3-verified, no cloud, no accounts. one ~4 MB binary.</p>
+
+  <div class="install">
+    <pre><span class="d"># linux / macos</span>
+<span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh
+
+<span class="d"># windows powershell</span>
+<span class="g">$</span> irm https://plinthlol.github.io/dashe/install.ps1 | iex</pre>
+  </div>
 
   <div class="dl">
     <a href="https://github.com/plinthlol/dashe/releases/latest/download/dshe-linux-x86_64.tar.gz"><span class="os">linux x86_64</span><span class="size">tar.gz</span></a>
