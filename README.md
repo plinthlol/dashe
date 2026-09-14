@@ -5,9 +5,8 @@ send files between machines. no cloud, no accounts, no cables.
 dshe is a small CLI tool for moving files and folders from one machine to
 another — over your local network or across the internet. it's a fork-flavored
 rewrite of [sendme](https://github.com/n0-computer/sendme) built on
-[iroh](https://iroh.computer), and it works the way SHAREit probably worked in
-your head: the sender just *exists* on the network, the receiver sees it, picks
-it, done.
+[iroh](https://iroh.computer): the sender just exists on the network, the
+receiver sees it, picks it, done.
 
 everything is encrypted end-to-end and verified against a blake3 hash, so a
 corrupted or tampered transfer fails loudly instead of quietly handing you
@@ -62,9 +61,8 @@ received myfolder (977.14 KiB) in 3s
 ```
 
 with exactly one sender nearby it doesn't even ask — it just connects. senders
-broadcast a tiny beacon on the LAN every second (that's the SHAREit trick), so
-this works with the router unplugged. turn on a phone hotspot, both machines
-join it, done.
+broadcast a tiny beacon on the LAN every second, so this works with the router
+unplugged. turn on a phone hotspot, both machines join it, done.
 
 you can also point the receiver somewhere specific:
 
@@ -108,9 +106,6 @@ you want it to stick around, `--bg` if you want it in the background.
   the other side; `--noarchive` keeps them as plain files
 - interrupted transfers keep their partial cache only with `--resume`,
   otherwise it's cleaned up
-- linux x86_64, macos aarch64 and windows x86_64 binaries are built by CI for
-  every release tag
-
 ## license
 
-apache-2.0 or mit, same as upstream sendme.
+mit.
