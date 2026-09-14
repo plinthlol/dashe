@@ -77,6 +77,25 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target.rust_target }}
 
+      - name: Compress binary with UPX
+        # Default NRV method: ~4 MB with ~50 ms startup penalty.
+        # (LZMA/--best would reach ~3.5 MB but adds ~250 ms — not worth it.)
+        # Never fails the release: unpacked binary ships if UPX misbehaves.
+        continue-on-error: true
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target.rust_target }}/release/${{ env.BIN_NAME }}"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+            upx "$BIN"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install upx
+            upx "$BIN"
+          else
+            choco install upx -y --no-progress
+            upx "$BIN"
+          fi
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
