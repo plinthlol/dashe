@@ -1,4 +1,4 @@
-//! Command line arguments.
+//! the whole cli lives in this file.
 
 use std::{
     collections::BTreeMap,
@@ -13,10 +13,8 @@ use std::{
 use anyhow::Context;
 use clap::{
     error::{ContextKind, ErrorKind},
-    CommandFactory, Parser, Subcommand, ValueEnum,
+    CommandFactory, Parser, Subcommand,
 };
-use clap_complete::generate as generate_completions;
-use clap_complete::Shell as CompletionShell;
 use console::style;
 use futures_buffered::BufferedStreamExt;
 use indicatif::{
@@ -51,20 +49,17 @@ use tokio::{select, sync::mpsc};
 use tracing::{error, trace};
 use walkdir::WalkDir;
 
-/// Send a file or directory between two machines, using blake3 verified streaming.
+/// send files and folders between machines. p2p, encrypted, blake3-verified.
 ///
-/// For all subcommands, you can specify a secret key using the IROH_SECRET
-/// environment variable. If you don't, a random one will be generated.
-///
-/// You can also specify a port for the magicsocket. If you don't, a random one
-/// will be chosen.
+/// set IROH_SECRET if you want a stable endpoint id, otherwise a random one
+/// is generated each run.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 pub struct Args {
     #[clap(subcommand)]
     pub command: Option<Commands>,
 
-    /// A file or folder to send. Will ask for confirmation.
+    /// the file or folder to send. asks before it starts.
     pub path: Option<PathBuf>,
 }
 
@@ -105,38 +100,25 @@ fn print_hash(hash: &Hash, format: Format) -> String {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Generate shell completions for zsh, fish or nushell.
-    Completions { shell: ComplShell },
-
-    /// Send a file or directory.
+    /// send a file or folder.
     Send(SendArgs),
 
-    /// Receive a file or directory.
+    /// receive a file or folder.
     #[clap(visible_alias = "recv")]
     Receive(ReceiveArgs),
 }
 
-/// Shells supported by the completions generator.
-#[derive(ValueEnum, Clone, Copy, Debug)]
-pub enum ComplShell {
-    Zsh,
-    Fish,
-    Nu,
-}
-
 #[derive(Parser, Debug)]
 pub struct CommonArgs {
-    /// The IPv4 address that magicsocket will listen on.
+    /// ipv4 address the magicsocket listens on.
     ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
+    /// defaults to a random free port. useful for firewall rules.
     #[clap(long, default_value = None)]
     pub magic_ipv4_addr: Option<SocketAddrV4>,
 
-    /// The IPv6 address that magicsocket will listen on.
+    /// ipv6 address the magicsocket listens on.
     ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
+    /// defaults to a random free port.
     #[clap(long, default_value = None)]
     pub magic_ipv6_addr: Option<SocketAddrV6>,
 
@@ -146,28 +128,24 @@ pub struct CommonArgs {
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Suppress progress bars.
+    /// no progress bars.
     #[clap(long, default_value_t = false)]
     pub no_progress: bool,
 
-    /// The relay URL to use as a home relay,
-    ///
-    /// Can be set to "disabled" to disable relay servers and "default"
-    /// to configure default servers.
+    /// the relay url to use as a home relay. "disabled" to go offline,
+    /// "default" for the public relays.
     #[clap(long, default_value_t = RelayModeOption::Default)]
     pub relay: RelayModeOption,
 
     #[clap(long)]
     pub show_secret: bool,
 
-    /// Number of parallel jobs to use while importing files.
-    ///
-    /// Defaults to the number of logical CPU cores.
+    /// how many files to import in parallel. defaults to your cpu count.
     #[clap(short = 'j', long)]
     pub jobs: Option<usize>,
 }
 
-/// Available command line options for configuring relays.
+/// what goes into a ticket.
 #[derive(Clone, Debug)]
 pub enum RelayModeOption {
     /// Disables relays altogether.
@@ -212,32 +190,23 @@ impl From<RelayModeOption> for RelayMode {
 
 #[derive(Parser, Debug)]
 pub struct SendArgs {
-    /// Path to the file or directory to send.
-    ///
-    /// The last component of the path will be used as the name of the data
-    /// being shared.
+    /// path to the file or folder to send. the last component of the path
+    /// becomes the name of the share.
     pub path: PathBuf,
 
-    /// What type of ticket to use.
+    /// what goes into the ticket.
     ///
-    /// Use "id" for the shortest type only including the endpoint ID,
-    /// "addresses" to only add IP addresses without a relay url,
-    /// "relay" to only add a relay address, and leave the option out
-    /// to use the biggest type of ticket that includes both relay and
-    /// address information.
-    ///
-    /// Generally, the more information the higher the likelihood of
-    /// a successful connection, but also the bigger a ticket to connect.
-    ///
-    /// This is most useful for debugging which methods of connection
-    /// establishment work well.
+    /// "id" = endpoint id only (smallest ticket, needs dns lookup),
+    /// "relay" = endpoint id + relay url, "addresses" = endpoint id + direct
+    /// ips, "relay-and-addresses" = everything (default: most likely to
+    /// connect, biggest ticket).
     #[clap(long, default_value_t = AddrInfoOptions::RelayAndAddresses)]
     pub ticket_type: AddrInfoOptions,
 
     #[clap(flatten)]
     pub common: CommonArgs,
 
-    /// Do not compress folders into a single archive before sending.
+    /// don't pack folders into a tar.gz before sending.
     #[clap(long)]
     pub noarchive: bool,
 
@@ -245,25 +214,24 @@ pub struct SendArgs {
     #[clap(long)]
     pub qr: bool,
 
-    /// Keep the sender running after the first complete transfer
-    /// (normally it exits once a receiver has downloaded the data).
+    /// keep the sender running after the first receiver finishes.
     #[clap(long)]
     pub nostop: bool,
 
-    /// Run the sender in the background; exits after the first
-    /// complete transfer. The ticket is printed and the shell is freed.
+    /// run the sender in the background and free the shell.
+    /// stops after the first transfer.
     #[clap(long, conflicts_with = "bg")]
     pub bg_stop: bool,
 
-    /// Run the sender in the background forever (until killed manually).
+    /// run the sender in the background forever (until you kill it).
     #[clap(long)]
     pub bg: bool,
 
-    /// Show debug details: content hash, per-file listing, import speed.
+    /// show the hash, per-file listing and import speed.
     #[clap(long)]
     pub debug: bool,
 
-    /// Store the receive command in the clipboard.
+    /// copy the receive command to the clipboard.
     #[cfg(feature = "clipboard")]
     #[clap(short = 'c', long)]
     pub clipboard: bool,
@@ -271,29 +239,28 @@ pub struct SendArgs {
 
 #[derive(Parser, Debug)]
 pub struct ReceiveArgs {
-    /// The ticket to use to connect to the sender.
+    /// the ticket to connect to.
     #[clap(conflicts_with = "scan")]
     pub ticket: Option<BlobTicket>,
 
-    /// Discover senders on the local network and pick one interactively.
+    /// find senders on the local network and pick one.
     #[clap(long)]
     pub scan: bool,
 
-    /// Keep the partial download cache after a failed or interrupted
-    /// transfer, so a retry can resume where it left off.
+    /// keep the partial download after a failure, so a retry continues
+    /// where it stopped.
     #[clap(long)]
     pub resume: bool,
 
-    /// Directory to export the received files into.
-    ///
-    /// Created if it does not exist. Defaults to the current directory.
+    /// where to put the received files. created if missing.
+    /// defaults to the current directory.
     pub dest: Option<PathBuf>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
 }
 
-/// Expand a leading `~` in a path to the user's home directory.
+/// turn a leading `~` into the home directory.
 fn expand_home(path: &Path) -> PathBuf {
     let Some(str_path) = path.to_str() else {
         return path.to_path_buf();
@@ -380,9 +347,7 @@ fn apply_options(addr: &mut EndpointAddr, opts: AddrInfoOptions) {
     }
 }
 
-/// Get the secret key or generate a new one.
-///
-/// Print the secret key to stderr if it was generated, so the user can save it.
+/// use IROH_SECRET if it's set, otherwise make a new key. prints it if asked.
 fn get_or_create_secret(print: bool) -> anyhow::Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).context("invalid secret"),
@@ -450,13 +415,8 @@ pub fn canonicalized_path_to_string(
     Ok(path_str)
 }
 
-/// Import from a file or directory into the database.
-///
-/// The returned tag always refers to a collection. If the input is a file, this
-/// is a collection with a single blob, named like the file.
-///
-/// If the input is a directory, the collection contains all the files in the
-/// directory.
+/// read a file or folder into the blob store. returns the collection tag,
+/// total size and the files inside.
 async fn import(
     path: PathBuf,
     db: &Store,
@@ -489,7 +449,7 @@ async fn import(
         })
         .filter_map(Result::transpose)
         .collect::<anyhow::Result<Vec<_>>>()?;
-    // import all the files, using num_cpus workers, return names and temp tags
+    // import all the files in parallel, collect names and temp tags
     // Only show an overall bar when there are multiple files. For a single
     // file it would just flash in and out.
     let op = if data_sources.len() > 1 {
@@ -659,7 +619,7 @@ async fn export(
 struct PerConnectionProgress {
     endpoint_id: String,
     requests: BTreeMap<u64, ProgressBar>,
-    /// At least one get request completed on this connection.
+    /// the receiver pulled at least one request on this connection.
     served: bool,
 }
 
@@ -748,8 +708,8 @@ async fn show_provide_progress(
                         );
                     }
                     ProviderMessage::ConnectionClosed(msg) => {
-                        // Do the map mutation without holding the lock across
-                        // the await below (keeps the future Send).
+                        // don't hold the lock across the await below
+                        // (keeps the future send).
                         let served = {
                             let mut map = connections.lock().unwrap();
                             match map.remove(&msg.connection_id) {
@@ -763,8 +723,8 @@ async fn show_provide_progress(
                                 None => false,
                             }
                         };
-                        // The receiver downloaded at least one request and
-                        // disconnected: that counts as a complete send.
+                        // receiver pulled what it wanted and left —
+                        // count it as a complete send
                         if served {
                             let _ = done.send(()).await;
                         }
@@ -786,8 +746,8 @@ async fn show_provide_progress(
     Ok(())
 }
 
-/// Spawn a detached background sender, wait for it to produce its ticket,
-/// print it, then return (freeing the shell).
+/// spawn a detached sender in the background, wait for the ticket,
+/// print it, hand the shell back.
 async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
 
@@ -843,8 +803,8 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Print the receive command as a scannable QR code (inverted colors so it
-/// scans on dark terminal backgrounds).
+/// print the receive command as a qr code. colors are inverted so it
+/// scans on dark terminals.
 fn print_ticket_qr(ticket: &str) -> anyhow::Result<()> {
     use qrcode::render::unicode::Dense1x2;
     let code = qrcode::QrCode::new(format!("dshe receive {ticket}"))?;
@@ -1760,12 +1720,6 @@ fn confirm_send(path: &Path) -> anyhow::Result<bool> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Dynamic shell completions: if the shell profile set COMPLETE=<shell>,
-    // print the completion hook instead of running normally.
-    clap_complete::CompleteEnv::with_factory(|| Args::command())
-        .completer("dshe")
-        .complete();
-
     tracing_subscriber::fmt::init();
     let args = match Args::try_parse() {
         Ok(args) => args,
@@ -1801,39 +1755,6 @@ async fn main() -> anyhow::Result<()> {
     let res = match command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
-        Commands::Completions { shell } => {
-            use std::io::Write;
-            let mut cmd = Args::command();
-            let mut out = std::io::stdout();
-            match shell {
-                ComplShell::Zsh => {
-                    generate_completions(
-                        CompletionShell::Zsh,
-                        &mut cmd,
-                        "dshe",
-                        &mut out,
-                    );
-                }
-                ComplShell::Fish => {
-                    generate_completions(
-                        CompletionShell::Fish,
-                        &mut cmd,
-                        "dshe",
-                        &mut out,
-                    );
-                }
-                ComplShell::Nu => {
-                    generate_completions(
-                        clap_complete_nushell::Nushell,
-                        &mut cmd,
-                        "dshe",
-                        &mut out,
-                    );
-                }
-            }
-            out.flush()?;
-            Ok(())
-        }
     };
     if let Err(e) = &res {
         eprintln!("{e}");
