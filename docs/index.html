@@ -3,132 +3,156 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>dashe — send files between machines, no cloud</title>
-<meta name="description" content="dshe is a CLI tool to send files and folders between machines over the local network or the internet. SHAREit-style LAN discovery, end-to-end encryption, blake3 verified streaming.">
+<title>dashe</title>
+<meta name="description" content="dshe — send files between machines over LAN or the internet. p2p, encrypted, blake3-verified. no cloud.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0d1117;
-    --panel: #161b22;
-    --border: #30363d;
-    --text: #e6edf3;
-    --dim: #8b949e;
-    --accent: #58a6ff;
-    --green: #3fb950;
-    --cyan: #39c5cf;
-    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --bg: #0a0a0a;
+    --fg: #d4d4d4;
+    --dim: #6b6b6b;
+    --faint: #2a2a2a;
+    --accent: #4ade80;
+    --accent-dim: #4ade8022;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
     background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    line-height: 1.6;
+    color: var(--fg);
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
-  header { padding: 72px 0 48px; text-align: center; }
-  h1 {
-    font-size: 3.2rem;
-    font-family: var(--mono);
-    letter-spacing: -2px;
-  }
-  h1 span { color: var(--accent); }
-  .tagline { color: var(--dim); font-size: 1.25rem; margin-top: 8px; }
-  .buttons { margin-top: 28px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-  .btn {
-    display: inline-block; padding: 10px 22px; border-radius: 8px;
-    text-decoration: none; font-weight: 600; border: 1px solid var(--border);
-  }
-  .btn.primary { background: var(--accent); color: #0d1117; }
-  .btn.primary:hover { filter: brightness(1.1); }
-  .btn.ghost { color: var(--text); }
-  .btn.ghost:hover { border-color: var(--accent); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+
+  /* header */
+  header { padding: 110px 0 80px; }
+  h1 { font-size: 15px; font-weight: 500; letter-spacing: 0.5px; color: var(--accent); }
+  h1::before { content: "▌ "; color: var(--accent); }
   h2 {
-    font-family: var(--mono); font-size: 1.4rem;
-    margin: 48px 0 16px; color: var(--accent);
+    font-size: 13px; font-weight: 500; letter-spacing: 2px;
+    text-transform: uppercase; color: var(--dim);
+    margin: 72px 0 20px; padding-top: 24px; border-top: 1px solid var(--faint);
   }
-  p.dim { color: var(--dim); }
+  h2::before { content: "## "; color: var(--faint); }
+  .hero {
+    font-size: clamp(2.2rem, 6vw, 3.6rem);
+    font-weight: 700; letter-spacing: -2px; line-height: 1.1;
+    margin: 28px 0 20px;
+  }
+  .hero em { font-style: normal; color: var(--accent); }
+  .sub { color: var(--dim); max-width: 560px; }
+
+  /* download */
+  .dl { display: flex; flex-direction: column; gap: 10px; margin-top: 32px; max-width: 480px; }
+  .dl a {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 13px 18px;
+    border: 1px solid var(--faint); border-radius: 6px;
+    text-decoration: none; color: var(--fg); font-size: 14px;
+    transition: border-color 0.15s;
+  }
+  .dl a:hover { border-color: var(--accent); }
+  .dl a .os::before { content: "▸ "; color: var(--accent); }
+  .dl a .size { color: var(--dim); font-size: 12px; }
+  .dl-note { margin-top: 14px; font-size: 13px; color: var(--dim); }
+  .dl-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+
+  /* code */
   pre {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 8px; padding: 16px 20px; overflow-x: auto;
-    font-family: var(--mono); font-size: 0.88rem; line-height: 1.7;
-    margin: 12px 0;
+    background: #101010; border: 1px solid var(--faint); border-radius: 6px;
+    padding: 18px 20px; overflow-x: auto;
+    font-size: 13px; line-height: 1.8; margin: 16px 0;
   }
-  .g { color: var(--green); } .c { color: var(--cyan); } .d { color: var(--dim); }
-  .grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 14px; margin-top: 16px;
+  .g { color: var(--accent); } .d { color: var(--dim); } .c { color: #e0e0e0; }
+
+  /* feature list */
+  ul.feat { list-style: none; margin-top: 8px; }
+  ul.feat li { padding: 6px 0; }
+  ul.feat li::before { content: "+ "; color: var(--accent); }
+  ul.feat b { color: var(--fg); font-weight: 500; }
+  ul.feat .desc { color: var(--dim); }
+
+  /* flag table */
+  .flags { margin-top: 8px; }
+  .flags div {
+    display: flex; gap: 24px; padding: 7px 0;
+    border-bottom: 1px solid var(--faint); font-size: 14px;
   }
-  .card {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 8px; padding: 16px 18px;
-  }
-  .card b { color: var(--cyan); font-family: var(--mono); }
-  .card p { color: var(--dim); font-size: 0.92rem; margin-top: 4px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-family: var(--mono); font-size: 0.88rem; }
-  td { border: 1px solid var(--border); padding: 8px 12px; }
-  td:first-child { color: var(--green); white-space: nowrap; }
+  .flags div:last-child { border-bottom: none; }
+  .flags .k { color: var(--accent); min-width: 180px; flex-shrink: 0; }
+  .flags .v { color: var(--dim); }
+
   footer {
-    margin-top: 72px; padding: 28px 0; border-top: 1px solid var(--border);
-    color: var(--dim); font-size: 0.9rem; text-align: center;
+    margin-top: 96px; padding: 32px 0 64px;
+    border-top: 1px solid var(--faint);
+    color: var(--dim); font-size: 13px;
   }
-  footer a { color: var(--accent); text-decoration: none; }
+  footer a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--faint); }
+  footer a:hover { border-bottom-color: var(--accent); }
 </style>
 </head>
 <body>
-<header class="wrap">
-  <h1>dshe<span>~</span></h1>
-  <p class="tagline">Send files between machines. No cloud, no accounts, no cables.</p>
-  <div class="buttons">
-    <a class="btn primary" href="https://github.com/plinthlol/dashe/releases/latest">Download latest</a>
-    <a class="btn ghost" href="https://github.com/plinthlol/dashe">Source on GitHub</a>
+<div class="wrap">
+
+<header>
+  <h1>dashe</h1>
+  <div class="hero">send files like<br><em>it's 2015</em> — minus<br>the ads.</div>
+  <p class="sub">p2p file transfer between machines over LAN or the internet. encrypted end-to-end, blake3-verified, no cloud, no accounts. one ~4 MB binary.</p>
+
+  <div class="dl">
+    <a href="https://github.com/plinthlol/dashe/releases/latest/download/dshe-linux-x86_64.tar.gz"><span class="os">linux x86_64</span><span class="size">tar.gz</span></a>
+    <a href="https://github.com/plinthlol/dashe/releases/latest/download/dshe-macos-aarch64.tar.gz"><span class="os">macos apple silicon</span><span class="size">tar.gz</span></a>
+    <a href="https://github.com/plinthlol/dashe/releases/latest/download/dshe-windows-x86_64.zip"><span class="os">windows x86_64</span><span class="size">zip</span></a>
   </div>
+  <p class="dl-note">all releases and checksums on <a href="https://github.com/plinthlol/dashe/releases">github</a>.</p>
 </header>
 
-<main class="wrap">
-  <h2>quickstart</h2>
-  <pre><span class="c"># machine A — sender (announces itself on the LAN)</span>
-$ dshe send myfolder
+<h2>quickstart</h2>
+<pre><span class="d"># machine a — sender</span>
+<span class="g">$</span> dshe send myfolder
 <span class="g">imported folder (compressed) myfolder (977.14 KiB)</span>
 
-  <span class="d">dshe</span> receive blobav3vanxqbcbyn7a46lqimpk47utzp7wnuu...
-
-<span class="c"># machine B — receiver. no ticket? just scan the LAN:</span>
-$ dshe receive --scan
-<span class="c">fetching</span> 1 file (488.70 KiB)
-  downloading [██████████████░░░░░░] 45.2 MiB/190.7 MiB (7s left)
+<span class="d"># machine b — receiver. no ticket needed:</span>
+<span class="g">$</span> dshe receive --scan
+<span class="c">  downloading [██████████████░░░░░░] 45.2 MiB/190.7 MiB (7s left)</span>
 <span class="g">received myfolder (977.14 KiB) in 3s</span></pre>
 
-  <h2>why dshe</h2>
-  <div class="grid">
-    <div class="card"><b>verified streaming</b><p>Every chunk is verified against a blake3 hash baked into the ticket. Corrupted or tampered data is mathematically impossible to miss.</p></div>
-    <div class="card"><b>p2p, encrypted</b><p>Direct connections with NAT hole punching over QUIC. Relay fallback when the network is hostile. End-to-end encrypted either way.</p></div>
-    <div class="card"><b>SHAREit-style discovery</b><p>Senders announce themselves on the LAN. <code>dshe receive --scan</code> lists them. No ticket needed — works with the router unplugged.</p></div>
-    <div class="card"><b>one-shot by default</b><p>The sender exits on its own after the first receiver completes. <code>--nostop</code> serves forever, <code>--bg</code> runs in the background.</p></div>
-    <div class="card"><b>folders, compressed</b><p>Directories are packed into a single tar.gz, sent as one blob, and unpacked on the other side. <code>--noarchive</code> to skip.</p></div>
-    <div class="card"><b>small &amp; fast</b><p>A ~4 MB static binary per platform. No runtime, no dependencies, no installer.</p></div>
-  </div>
+<h2>how it works</h2>
+<ul class="feat">
+  <li><b>senders announce</b> <span class="desc">— a tiny beacon on the local network, every second. no server, no internet.</span></li>
+  <li><b>receivers pick</b> <span class="desc">— <code>receive --scan</code> lists everyone sharing nearby. tap a number.</span></li>
+  <li><b>data moves p2p</b> <span class="desc">— direct connection (nat hole punching) over quic, relay fallback if the network is hostile.</span></li>
+  <li><b>everything is verified</b> <span class="desc">— every chunk checked against a blake3 hash. corruption or tampering fails, always.</span></li>
+</ul>
 
-  <h2>flags you'll actually use</h2>
-  <table>
-    <tr><td>--scan</td><td>discover nearby senders and pick one</td></tr>
-    <tr><td>--qr</td><td>show the receive command as a scannable QR code</td></tr>
-    <tr><td>--bg / --bg-stop</td><td>serve in the background (forever / until first transfer)</td></tr>
-    <tr><td>--noarchive</td><td>send folders uncompressed</td></tr>
-    <tr><td>--nostop</td><td>keep the sender alive for multiple receivers</td></tr>
-    <tr><td>--resume</td><td>keep partial downloads so a retry can continue</td></tr>
-    <tr><td>--relay disabled</td><td>LAN-only mode, fully offline</td></tr>
-  </table>
+<h2>flags</h2>
+<div class="flags">
+  <div><span class="k">--scan</span><span class="v">discover nearby senders, pick one interactively</span></div>
+  <div><span class="k">--qr</span><span class="v">show the receive command as a scannable qr code</span></div>
+  <div><span class="k">--bg / --bg-stop</span><span class="v">serve in the background (forever / until first transfer)</span></div>
+  <div><span class="k">--nostop</span><span class="v">keep serving for multiple receivers</span></div>
+  <div><span class="k">--noarchive</span><span class="v">send folders uncompressed</span></div>
+  <div><span class="k">--resume</span><span class="v">keep partial downloads so a retry continues</span></div>
+  <div><span class="k">--relay disabled</span><span class="v">lan-only mode, fully offline</span></div>
+  <div><span class="k">--debug</span><span class="v">hash, per-file listing, transfer speed</span></div>
+</div>
 
-  <h2>the dead-router recipe</h2>
-  <p class="dim">Internet's gone, router's off, someone's in the same room:</p>
-  <pre><span class="c"># turn on a phone hotspot, both machines join it, then:</span>
-$ dshe send --qr ./stuff
-<span class="c"># ...point your phone at the screen, done.</span></pre>
+<h2>the dead-router recipe</h2>
+<pre><span class="d"># internet gone, router off, someone in the same room:</span>
+<span class="d"># turn on a phone hotspot. both machines join it. then:</span>
+<span class="g">$</span> dshe send --qr ./stuff
+<span class="d"># point your phone at the screen.</span></pre>
 
-  <footer>
-    <p>dashe is a fork-flavored rewrite of the excellent <a href="https://github.com/n0-computer/sendme">sendme</a>, built on <a href="https://iroh.computer">iroh</a>.</p>
-    <p>Apache-2.0 / MIT</p>
-  </footer>
-</main>
+<footer>
+  <p>dashe stands on <a href="https://iroh.computer">iroh</a> — a fork-flavored rewrite of <a href="https://github.com/n0-computer/sendme">sendme</a>.</p>
+  <p style="margin-top:6px"><a href="https://github.com/plinthlol/dashe">source</a> · <a href="https://github.com/plinthlol/dashe/releases">releases</a> · apache-2.0 / mit</p>
+</footer>
+
+</div>
 </body>
 </html>
