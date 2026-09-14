@@ -83,6 +83,34 @@ $ dshe receive <ticket> ~/somewhere
 | `--debug` | show the content hash, per-file listing and import speed |
 | `--relay <url\|disabled>` | pick a relay server, or go fully offline (LAN-only) |
 
+## completions
+
+the binary prints completion scripts to stdout — you put them where your
+shell looks:
+
+zsh:
+
+```sh
+mkdir -p ~/.zfunc
+dshe completions zsh > ~/.zfunc/_dshe
+# then add `fpath=(~/.zfunc $fpath); autoload -U compinit; compinit`
+# to your ~/.zshrc before the prompt line
+```
+
+fish:
+
+```fish
+dshe completions fish > ~/.config/fish/completions/dshe.fish
+```
+
+nushell:
+
+```nu
+dshe completions nu | save -f ($nu.data-dir | path join "vendor" "autoload" "dshe.nu")
+```
+
+bash/powershell/elvish aren't generated here — ask if you want them.
+
 ## how it works, roughly
 
 senders announce themselves with a tiny UDP beacon on the local network every

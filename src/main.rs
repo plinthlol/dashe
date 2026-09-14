@@ -13,8 +13,10 @@ use std::{
 use anyhow::Context;
 use clap::{
     error::{ContextKind, ErrorKind},
-    CommandFactory, Parser, Subcommand,
+    CommandFactory, Parser, Subcommand, ValueEnum,
 };
+use clap_complete::generate as generate_completions;
+use clap_complete::Shell as CompletionShell;
 use console::style;
 use futures_buffered::BufferedStreamExt;
 use indicatif::{
@@ -103,12 +105,23 @@ fn print_hash(hash: &Hash, format: Format) -> String {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Generate shell completions for zsh, fish or nushell.
+    Completions { shell: ComplShell },
+
     /// Send a file or directory.
     Send(SendArgs),
 
     /// Receive a file or directory.
     #[clap(visible_alias = "recv")]
     Receive(ReceiveArgs),
+}
+
+/// Shells supported by the completions generator.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum ComplShell {
+    Zsh,
+    Fish,
+    Nu,
 }
 
 #[derive(Parser, Debug)]
@@ -1782,6 +1795,39 @@ async fn main() -> anyhow::Result<()> {
     let res = match command {
         Commands::Send(args) => send(args).await,
         Commands::Receive(args) => receive(args).await,
+        Commands::Completions { shell } => {
+            use std::io::Write;
+            let mut cmd = Args::command();
+            let mut out = std::io::stdout();
+            match shell {
+                ComplShell::Zsh => {
+                    generate_completions(
+                        CompletionShell::Zsh,
+                        &mut cmd,
+                        "dshe",
+                        &mut out,
+                    );
+                }
+                ComplShell::Fish => {
+                    generate_completions(
+                        CompletionShell::Fish,
+                        &mut cmd,
+                        "dshe",
+                        &mut out,
+                    );
+                }
+                ComplShell::Nu => {
+                    generate_completions(
+                        clap_complete_nushell::Nushell,
+                        &mut cmd,
+                        "dshe",
+                        &mut out,
+                    );
+                }
+            }
+            out.flush()?;
+            Ok(())
+        }
     };
     if let Err(e) = &res {
         eprintln!("{e}");
