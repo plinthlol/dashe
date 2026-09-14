@@ -22,6 +22,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
+    position: relative;
     background: var(--bg);
     color: var(--fg);
     font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -30,6 +31,15 @@
     -webkit-font-smoothing: antialiased;
   }
   .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+  nav {
+    position: absolute; top: 28px; right: 28px;
+    display: flex; gap: 18px; font-size: 13px;
+  }
+  nav a {
+    color: var(--dim); text-decoration: underline;
+    text-underline-offset: 3px; text-decoration-color: var(--faint);
+  }
+  nav a:hover { color: var(--accent); text-decoration-color: var(--accent); }
 
   /* header */
   header { padding: 36px 0 56px; }
@@ -135,6 +145,10 @@
 </style>
 </head>
 <body>
+<nav>
+  <a href="https://github.com/plinthlol/dashe">github</a>
+  <a href="https://plinthlol.github.io/dashe/">web</a>
+</nav>
 <div class="wrap">
 
 <header>
@@ -198,10 +212,7 @@
 <span class="g">$</span> dshe send --qr ./stuff
 <span class="d"># point your phone at the screen.</span></pre>
 
-<footer>
-  <p>dashe stands on <a href="https://iroh.computer">iroh</a> — a fork-flavored rewrite of <a href="https://github.com/n0-computer/sendme">sendme</a>.</p>
-  <p style="margin-top:6px"><a href="https://github.com/plinthlol/dashe">source</a> · <a href="https://github.com/plinthlol/dashe/releases">releases</a> · mit</p>
-</footer>
+
 
 </div>
 <script>
