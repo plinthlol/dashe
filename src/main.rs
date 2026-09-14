@@ -228,6 +228,10 @@ pub struct SendArgs {
     #[clap(long)]
     pub noarchive: bool,
 
+    /// Show the receive command as a QR code.
+    #[clap(long)]
+    pub qr: bool,
+
     /// Keep the sender running after the first complete transfer
     /// (normally it exits once a receiver has downloaded the data).
     #[clap(long)]
@@ -775,6 +779,9 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
         "{}",
         style(format!("dshe receive {ticket}")).bold(),
     );
+    if args.qr {
+        print_ticket_qr(&ticket)?;
+    }
     let mode = if args.bg_stop {
         "stops automatically after the first transfer"
     } else {
@@ -784,6 +791,23 @@ async fn spawn_background(args: SendArgs) -> anyhow::Result<()> {
         "{}",
         style(format!("running in background (pid {pid}, {mode}; stop with: kill {pid}))")).dim(),
     );
+    Ok(())
+}
+
+/// Print the receive command as a scannable QR code (inverted colors so it
+/// scans on dark terminal backgrounds).
+fn print_ticket_qr(ticket: &str) -> anyhow::Result<()> {
+    use qrcode::render::unicode::Dense1x2;
+    let code = qrcode::QrCode::new(format!("dshe receive {ticket}"))?;
+    let qr = code
+        .render::<Dense1x2>()
+        .dark_color(Dense1x2::Light)
+        .light_color(Dense1x2::Dark)
+        .quiet_zone(true)
+        .build();
+    println!();
+    println!("{qr}");
+    println!();
     Ok(())
 }
 
@@ -974,6 +998,10 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     // Hand the ticket to the foreground process that spawned us.
     if let Ok(ticket_file) = std::env::var("DASHE_TICKET_FILE") {
         let _ = std::fs::write(&ticket_file, ticket.to_string());
+    }
+
+    if args.qr {
+        print_ticket_qr(&ticket.to_string())?;
     }
 
     #[cfg(feature = "clipboard")]
