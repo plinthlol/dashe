@@ -221,7 +221,7 @@ fn send_recv_folder_archive_with_dest() {
     );
 }
 
-/// SHAREit-style discovery: a sender beaconing on the LAN is found by
+/// Local-network discovery: a sender beaconing on the LAN is found by
 /// `receive --scan` and picked by number.
 #[test]
 fn scan_finds_and_receives() {

@@ -997,7 +997,7 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     apply_options(&mut addr, args.ticket_type);
     let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
 
-    // Announce the share on the local network (SHAREit-style beacons) so
+    // Announce the share on the local network so
     // `dshe receive --scan` can find it without any ticket exchange.
     {
         let endpoint = router.endpoint();
@@ -1188,7 +1188,7 @@ fn add_to_clipboard(ticket: &BlobTicket) {
 
 const TICK_MS: u64 = 250;
 
-/// UDP port used for local-network sender discovery (SHAREit-style beacons).
+/// UDP port used for local-network sender discovery beacons.
 const BEACON_PORT: u16 = 51510;
 /// Multicast group for beacons (works alongside 255.255.255.255 broadcast).
 const BEACON_MULTICAST: std::net::Ipv4Addr = std::net::Ipv4Addr::new(239, 255, 43, 211);
