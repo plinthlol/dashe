@@ -62,15 +62,28 @@
   .dl summary {
     padding: 13px 18px; cursor: pointer; list-style: none;
     font-size: 14px; color: var(--fg);
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; align-items: center; gap: 4px;
   }
   .dl summary::-webkit-details-marker { display: none; }
-  .dl summary::before { content: "▸ "; color: var(--accent); }
-  .dl details[open] summary::before { content: "▾ "; }
+  .dl summary::before { content: "▸"; color: var(--accent); }
+  .dl details[open] summary::before { content: "▾"; }
+  .dl summary .copy { margin-left: auto; }
   .dl details pre {
+    margin: 0; padding: 16px 18px;
+    background: #0f0f0f;
     border: none; border-top: 1px solid var(--faint);
-    border-radius: 0 0 6px 6px; margin: 0;
+    border-radius: 0 0 6px 6px;
+    font-size: 13px; line-height: 1.8;
+    white-space: pre-wrap; word-break: break-all;
   }
+  .dl .copy {
+    font-family: inherit; font-size: 11px;
+    color: var(--dim); background: none;
+    border: 1px solid var(--faint); border-radius: 4px;
+    padding: 3px 10px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .dl .copy:hover { color: var(--accent); border-color: var(--accent); }
   .dl-note { margin-top: 14px; font-size: 13px; color: var(--dim); }
   .dl-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
 
@@ -118,16 +131,19 @@
 
   <div class="dl">
     <details>
-      <summary>linux x86_64</summary>
-      <pre><span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre>
+      <summary>linux x86_64<button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh">copy</button></summary>
+      <pre><span class="d"># in your terminal</span>
+<span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre>
     </details>
     <details>
-      <summary>macos apple silicon</summary>
-      <pre><span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre>
+      <summary>macos apple silicon<button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh">copy</button></summary>
+      <pre><span class="d"># in your terminal</span>
+<span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre>
     </details>
     <details>
-      <summary>windows x86_64</summary>
-      <pre><span class="g">$</span> irm https://plinthlol.github.io/dashe/install.ps1 | iex</pre>
+      <summary>windows x86_64<button class="copy" data-cmd="irm https://plinthlol.github.io/dashe/install.ps1 | iex">copy</button></summary>
+      <pre><span class="d"># in powershell</span>
+<span class="g">$</span> irm https://plinthlol.github.io/dashe/install.ps1 | iex</pre>
     </details>
   </div>
   <p class="dl-note">all releases and checksums on <a href="https://github.com/plinthlol/dashe/releases">github</a>.</p>
@@ -175,5 +191,17 @@
 </footer>
 
 </div>
+<script>
+document.querySelectorAll(".copy").forEach(function (btn) {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(btn.dataset.cmd).then(function () {
+      btn.textContent = "copied";
+      setTimeout(function () { btn.textContent = "copy"; }, 1200);
+    });
+  });
+});
+</script>
 </body>
 </html>
