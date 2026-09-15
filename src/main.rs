@@ -653,10 +653,9 @@ async fn per_request_progress(
         return;
     };
     pb.set_style(
-        ProgressStyle::with_template(
-            "{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}",
-        ).unwrap()
-        .progress_chars("#>-"),
+        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes} ({eta})")
+            .unwrap()
+            .progress_chars("██░"),
     );
     while let Ok(Some(msg)) = rx.recv().await {
         match msg {
@@ -1366,11 +1365,9 @@ fn make_import_overall_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template(
-            "{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len}",
-        )
-        .unwrap()
-        .progress_chars("#>-"),
+        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {pos}/{len}")
+            .unwrap()
+            .progress_chars("██░"),
     );
     pb
 }
@@ -1379,9 +1376,9 @@ fn make_import_item_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}")
+        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes}")
             .unwrap()
-            .progress_chars("#>-"),
+            .progress_chars("██░"),
     );
     pb
 }
@@ -1390,7 +1387,7 @@ fn make_download_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template(" downloading [{wide_bar:.cyan/blue}] {binary_bytes} / {binary_total_bytes} {msg}")
+        ProgressStyle::with_template(" downloading {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes} {msg}")
             .unwrap()
             .progress_chars("██░"),
     );
@@ -1401,9 +1398,9 @@ fn make_export_overall_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {human_pos}/{human_len} {per_sec}")
+        ProgressStyle::with_template(" exporting {wide_bar:.cyan/blue} {human_pos}/{human_len} ({eta})")
             .unwrap()
-            .progress_chars("#>-"),
+            .progress_chars("██░"),
     );
     pb
 }
@@ -1412,11 +1409,9 @@ fn make_export_item_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb.set_style(
-        ProgressStyle::with_template(
-            "{msg}{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes}",
-        )
-        .unwrap()
-        .progress_chars("#>-"),
+        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes}")
+            .unwrap()
+            .progress_chars("██░"),
     );
     pb
 }
