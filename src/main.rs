@@ -567,26 +567,39 @@ async fn export(
     collection: Collection,
     mp: &mut MultiProgress,
     root: &Path,
+    resume: bool,
 ) -> anyhow::Result<()> {
-    let op = mp.add(make_export_overall_progress());
-    op.set_length(collection.len() as u64);
-    for (i, (name, hash)) in collection.iter().enumerate() {
-        op.set_position(i as u64);
+    // Preflight every target path before writing anything, so a name
+    // collision aborts cleanly instead of leaving a half-received folder.
+    let mut targets = Vec::with_capacity(collection.len());
+    for (name, _hash) in collection.iter() {
         let target = get_export_path(root, name)?;
         if target.exists() {
             eprintln!(
-                "target {} already exists. Export stopped.",
-                target.display()
+                "target {} already exists. Nothing was written to {}.",
+                target.display(),
+                root.display()
             );
             eprintln!(
-                "You can remove the file or directory and try again. The download will not be repeated."
+                "You can remove the file or directory and try again{}.",
+                if resume {
+                    ", keeping the partial cache, so the download will not be repeated"
+                } else {
+                    ", but the download will be repeated"
+                }
             );
             anyhow::bail!("target {} already exists", target.display());
         }
+        targets.push(target);
+    }
+    let op = mp.add(make_export_overall_progress());
+    op.set_length(collection.len() as u64);
+    for (i, ((name, hash), target)) in collection.iter().zip(targets.iter()).enumerate() {
+        op.set_position(i as u64);
         let mut stream = db
             .export_with_opts(ExportOptions {
                 hash: *hash,
-                target,
+                target: target.clone(),
                 mode: ExportMode::Copy,
             })
             .stream()
@@ -1613,7 +1626,7 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                 .unwrap_or(&first_name)
                 .to_string()
         };
-        export(&db, collection, &mut mp, &dest).await?;
+        export(&db, collection, &mut mp, &dest, args.resume).await?;
         if is_archive {
             // Unpack the archive into the destination directory and drop it.
             let archive_target = dest.join(&first_name);

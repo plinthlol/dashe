@@ -327,3 +327,182 @@ fn bg_stop_exits_after_transfer() {
         .collect();
     assert!(leftovers.is_empty(), "worker left behind: {leftovers:?}");
 }
+
+/// A name collision in the destination aborts before anything is written:
+/// files before the conflicting entry must not appear. After the conflict is
+/// cleared, a rerun delivers the whole share.
+#[test]
+fn receive_collision_aborts_before_writing() {
+    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    let folder = src_dir.path().join("collide");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("a.bin"), vec![1u8; 100]).unwrap();
+    std::fs::write(folder.join("b.bin"), vec![2u8; 100]).unwrap();
+
+    let mut send_cmd = duct::cmd(
+        dshe_bin(),
+        [
+            "send",
+            "--noarchive",
+            "--relay",
+            "disabled",
+            folder.as_os_str().to_str().unwrap(),
+        ],
+    )
+    .dir(src_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .reader()
+    .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+
+    // The share exports as dest/collide/{a,b}.bin. Pre-plant a collision on
+    // b only; a does not exist.
+    let collide_dir = tgt_dir.path().join("collide");
+    std::fs::create_dir_all(&collide_dir).unwrap();
+    std::fs::write(collide_dir.join("b.bin"), vec![9u8; 100]).unwrap();
+
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        [
+            "receive",
+            "--relay",
+            "disabled",
+            &ticket,
+            tgt_dir.path().to_str().unwrap(),
+        ],
+    )
+    .dir(tgt_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run()
+    .unwrap();
+    assert!(!receive_output.status.success(), "{receive_output:?}");
+    // Preflight: nothing may be written, neither a.bin nor a clobbered b.bin.
+    assert!(
+        !collide_dir.join("a.bin").exists(),
+        "a.bin was written despite collision"
+    );
+    assert_eq!(
+        std::fs::read(collide_dir.join("b.bin")).unwrap(),
+        vec![9u8; 100],
+        "b.bin was overwritten despite collision"
+    );
+    // ... and the partial receive cache is cleaned up without --resume.
+    let caches: Vec<_> = std::fs::read_dir(tgt_dir.path())
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().to_string_lossy().to_string();
+            name.starts_with(".dashe-recv-").then_some(name)
+        })
+        .collect();
+    assert!(caches.is_empty(), "recv cache left behind: {caches:?}");
+
+    // Clear the conflict and rerun: the transfer should now fully succeed.
+    std::fs::remove_file(collide_dir.join("b.bin")).unwrap();
+    drop(send_cmd);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let mut send_cmd = duct::cmd(
+        dshe_bin(),
+        [
+            "send",
+            "--noarchive",
+            "--relay",
+            "disabled",
+            folder.as_os_str().to_str().unwrap(),
+        ],
+    )
+    .dir(src_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .reader()
+    .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        [
+            "receive",
+            "--relay",
+            "disabled",
+            &ticket,
+            tgt_dir.path().to_str().unwrap(),
+        ],
+    )
+    .dir(tgt_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .run()
+    .unwrap();
+    assert!(receive_output.status.success(), "{receive_output:?}");
+    assert_eq!(
+        std::fs::read(collide_dir.join("a.bin")).unwrap(),
+        vec![1u8; 100]
+    );
+    assert_eq!(
+        std::fs::read(collide_dir.join("b.bin")).unwrap(),
+        vec![2u8; 100]
+    );
+}
+
+/// Without --resume a failed receive deletes the partial cache, so the next
+/// attempt re-downloads; with --resume the cache is kept.
+#[test]
+fn receive_collision_message_matches_resume_behavior() {
+    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    let folder = src_dir.path().join("resumecheck");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("x.bin"), vec![3u8; 100]).unwrap();
+
+    let mut send_cmd = duct::cmd(
+        dshe_bin(),
+        [
+            "send",
+            "--noarchive",
+            "--relay",
+            "disabled",
+            folder.as_os_str().to_str().unwrap(),
+        ],
+    )
+    .dir(src_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .reader()
+    .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+
+    // Collide on the only entry (exported as dest/resumecheck/x.bin).
+    let rc_dir = tgt_dir.path().join("resumecheck");
+    std::fs::create_dir_all(&rc_dir).unwrap();
+    std::fs::write(rc_dir.join("x.bin"), vec![8u8; 100]).unwrap();
+
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        [
+            "receive",
+            "--relay",
+            "disabled",
+            &ticket,
+            tgt_dir.path().to_str().unwrap(),
+        ],
+    )
+    .dir(tgt_dir.path())
+    .env_remove("RUST_LOG")
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run()
+    .unwrap();
+    assert!(!receive_output.status.success(), "{receive_output:?}");
+    let stderr = String::from_utf8_lossy(&receive_output.stderr);
+    assert!(
+        stderr.contains("the download will be repeated"),
+        "expected no-resume message on stderr: {stderr}"
+    );
+}
