@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dashe</title>
+<meta name="description" content="dshe — send files between machines over LAN or the internet. p2p, encrypted, blake3-verified. no cloud.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --fg: #d4d4d4;
+    --dim: #6b6b6b;
+    --faint: #2a2a2a;
+    --accent: #7aa2f7;
+    --accent-dim: #7aa2f722;
+    --code-bg: #101010;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    position: relative;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 28px; }
+  nav {
+    position: absolute; top: 28px; right: 28px;
+    display: flex; gap: 18px; font-size: 15px;
+  }
+  nav a {
+    color: var(--dim); text-decoration: underline;
+    text-underline-offset: 3px; text-decoration-color: var(--faint);
+  }
+  nav a:hover { color: var(--accent); text-decoration-color: var(--accent); }
+
+  /* header */
+  header { padding: 36px 0 56px; }
+  .logo {
+    font-size: clamp(2.4rem, 7vw, 3.4rem);
+    font-weight: 700; letter-spacing: -2px;
+  }
+  .logo b { color: var(--accent); font-weight: 700; }
+  h2 {
+    font-size: 13px; font-weight: 500; letter-spacing: 2px;
+    text-transform: uppercase; color: var(--dim);
+    margin: 72px 0 20px; padding-top: 24px; border-top: 1px solid var(--faint);
+  }
+  h2::before { content: "## "; color: var(--faint); }
+  .hero {
+    font-size: clamp(2.2rem, 6vw, 3.6rem);
+    font-weight: 700; letter-spacing: -2px; line-height: 1.1;
+    margin: 28px 0 20px;
+  }
+  .hero em { font-style: normal; color: var(--accent); }
+  .sub { color: var(--dim); max-width: 560px; }
+
+  /* download */
+  .dl { display: flex; flex-direction: column; gap: 10px; margin-top: 32px; max-width: 480px; }
+  .dl details {
+    border: 1px solid var(--faint); border-radius: 6px;
+    transition: border-color 0.15s;
+  }
+  .dl details:hover { border-color: var(--accent); }
+  .dl details[open] { border-color: var(--accent); }
+  .dl summary {
+    padding: 13px 18px; cursor: pointer; list-style: none;
+    font-size: 14px; color: var(--fg);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .dl summary::-webkit-details-marker { display: none; }
+  .dl summary::before { content: "▸"; color: var(--accent); }
+  .dl details[open] summary::before { content: "▾"; }
+  .dl .codebox { position: relative; }
+  .dl .codebox .copy { position: absolute; top: 10px; right: 10px; z-index: 1; }
+  .dl details pre {
+    margin: 0; padding: 16px 18px; padding-right: 52px;
+    background: #0f0f0f;
+    border: none; border-top: 1px solid var(--faint);
+    border-radius: 0 0 6px 6px;
+    font-size: 11.5px; line-height: 1.9;
+    white-space: pre; overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--faint) transparent;
+  }
+  .dl details pre::-webkit-scrollbar { height: 5px; }
+  .dl details pre::-webkit-scrollbar-track { background: transparent; }
+  .dl details pre::-webkit-scrollbar-thumb {
+    background: var(--faint); border-radius: 3px;
+  }
+  .dl details pre::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+  .dl .copy {
+    display: none;
+    font-family: inherit;
+    color: var(--dim); background: none;
+    border: 1px solid var(--faint); border-radius: 4px;
+    padding: 5px 7px 3px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .dl details[open] .copy { display: flex; align-items: center; }
+  .dl .copy:hover { color: var(--accent); border-color: var(--accent); }
+  .dl .copy.copied { color: var(--accent); border-color: var(--accent); }
+  .dl-note { margin-top: 14px; font-size: 13px; color: var(--dim); }
+  .dl-note a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+
+  /* code */
+  pre {
+    background: var(--code-bg); border: 1px solid var(--faint); border-radius: 6px;
+    padding: 18px 20px; overflow-x: auto;
+    font-size: 13px; line-height: 1.8; margin: 16px 0;
+  }
+  .g { color: var(--accent); } .d { color: var(--dim); } .c { color: var(--fg); }
+
+  /* feature list */
+  ul.feat { list-style: none; margin-top: 8px; }
+  ul.feat li { padding: 6px 0; }
+  ul.feat li::before { content: "+ "; color: var(--accent); }
+  ul.feat b { color: var(--fg); font-weight: 500; }
+  ul.feat .desc { color: var(--dim); }
+
+  /* flag table */
+  .flags { margin-top: 8px; }
+  .flags div {
+    display: flex; gap: 24px; padding: 7px 0;
+    border-bottom: 1px solid var(--faint); font-size: 14px;
+  }
+  .flags div:last-child { border-bottom: none; }
+  .flags .k { color: var(--accent); min-width: 180px; flex-shrink: 0; }
+  .flags .v { color: var(--dim); }
+
+  footer {
+    margin-top: 96px; padding: 32px 0 64px;
+    border-top: 1px solid var(--faint);
+    color: var(--dim); font-size: 13px;
+  }
+  footer a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--faint); }
+  footer a:hover { border-bottom-color: var(--accent); }
+</style>
+</head>
+<body>
+<nav>
+  <a href="https://github.com/plinthlol/dashe">github</a>
+</nav>
+<div class="wrap">
+
+<header>
+  <div class="logo">dshe<b>~</b></div>
+  <div class="hero">send files.<br><em>skip the cloud.</em></div>
+  <p class="sub">p2p file transfer between machines over LAN or the internet. encrypted end-to-end, blake3-verified, no cloud, no accounts.</p>
+
+  <div class="dl">
+    <details>
+      <summary>linux x86_64</summary>
+      <div class="codebox"><button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><span class="d"># in your terminal</span>
+<span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre></div>
+    </details>
+    <details>
+      <summary>macos apple silicon</summary>
+      <div class="codebox"><button class="copy" data-cmd="curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><span class="d"># in your terminal</span>
+<span class="g">$</span> curl -fsSL https://plinthlol.github.io/dashe/install.sh | sh</pre></div>
+    </details>
+    <details>
+      <summary>windows x86_64</summary>
+      <div class="codebox"><button class="copy" data-cmd="irm https://plinthlol.github.io/dashe/install.ps1 | iex"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><pre><span class="d"># in powershell</span>
+<span class="g">$</span> irm https://plinthlol.github.io/dashe/install.ps1 | iex</pre></div>
+    </details>
+  </div>
+  <p class="dl-note">all releases and checksums on <a href="https://github.com/plinthlol/dashe/releases">github</a>.</p>
+</header>
+
+<h2>quickstart</h2>
+<pre><span class="d"># machine a — sender</span>
+<span class="g">$</span> dshe send myfolder
+<span class="g">imported folder (compressed) myfolder (977.14 KiB)</span>
+
+<span class="d"># machine b — receiver. no ticket needed:</span>
+<span class="g">$</span> dshe receive --scan
+<span class="c">  downloading [██████████████░░░░░░] 45.2 MiB/190.7 MiB (7s left)</span>
+<span class="g">received myfolder (977.14 KiB) in 3s</span></pre>
+
+<h2>how it works</h2>
+<ul class="feat">
+  <li><b>senders announce</b> <span class="desc">— a tiny beacon on the local network, every second. no server, no internet.</span></li>
+  <li><b>receivers pick</b> <span class="desc">— <code>receive --scan</code> lists everyone sharing nearby. tap a number.</span></li>
+  <li><b>data moves p2p</b> <span class="desc">— direct connection (nat hole punching) over quic, relay fallback if the network is hostile.</span></li>
+  <li><b>everything is verified</b> <span class="desc">— every chunk checked against a blake3 hash. corruption or tampering fails, always.</span></li>
+</ul>
+
+<h2>flags</h2>
+<div class="flags">
+  <div><span class="k">--scan</span><span class="v">discover nearby senders, pick one interactively</span></div>
+  <div><span class="k">--qr</span><span class="v">show the receive command as a scannable qr code</span></div>
+  <div><span class="k">--bg / --bg-stop</span><span class="v">serve in the background (forever / until first transfer)</span></div>
+  <div><span class="k">--nostop</span><span class="v">keep serving for multiple receivers</span></div>
+  <div><span class="k">--noarchive</span><span class="v">send folders uncompressed</span></div>
+  <div><span class="k">--resume</span><span class="v">keep partial downloads so a retry continues</span></div>
+  <div><span class="k">--relay disabled</span><span class="v">lan-only mode, fully offline</span></div>
+  <div><span class="k">--debug</span><span class="v">hash, per-file listing, transfer speed</span></div>
+</div>
+
+<h2>the dead-router recipe</h2>
+<pre><span class="d"># internet gone, router off, someone in the same room:</span>
+<span class="d"># turn on a phone hotspot. both machines join it. then:</span>
+<span class="g">$</span> dshe send --qr ./stuff
+<span class="d"># point your phone at the screen.</span></pre>
+
+
+
+</div>
+<script>
+document.querySelectorAll(".copy").forEach(function (btn) {
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(btn.dataset.cmd).then(function () {
+      btn.classList.add("copied");
+      var original = btn.innerHTML;
+      btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      setTimeout(function () {
+        btn.innerHTML = original;
+        btn.classList.remove("copied");
+      }, 1200);
+    });
+  });
+});
+</script>
+</body>
+</html>

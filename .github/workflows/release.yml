@@ -1,0 +1,143 @@
+# The way this works is the following:
+#
+# The workflow is triggered by pushing a tag (v*) or manually via
+# workflow_dispatch. It builds the release binary for all 3 platforms in
+# parallel, packages each build, and (for tag pushes) creates the GitHub
+# release and uploads the archives as assets.
+#
+# For manual dispatches without a release version, the archives are only
+# uploaded as workflow artifacts — handy for test builds.
+
+name: release
+run-name: release
+
+# Needed to create the GitHub release and upload assets.
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version"
+        required: false
+        default: ""
+
+env:
+  BIN_NAME: dshe
+
+jobs:
+  build-release:
+    name: build (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+            archive: tar.gz
+          - name: macos-aarch64
+            os: macos-latest
+            rust_target: aarch64-apple-darwin
+            archive: tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            archive: zip
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.rust_target }}
+
+      - uses: swatinem/rust-cache@v2
+
+      - name: Ensure musl support
+        if: contains(matrix.target.rust_target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Sync version with tag
+        if: github.ref_type == 'tag' || github.event.inputs.release_version != ''
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.release_version || github.ref_name }}"
+          version="${version#v}"
+          sed -i.bak "s/^version = \".*\"/version = \"$version\"/" Cargo.toml && rm -f Cargo.toml.bak
+          cargo update -p dashe
+          echo "building dashe $version"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target.rust_target }}
+
+      - name: Compress binary with UPX
+        # Default NRV method: ~4 MB with ~50 ms startup penalty.
+        # (LZMA/--best would reach ~3.5 MB but adds ~250 ms — not worth it.)
+        # Never fails the release: unpacked binary ships if UPX misbehaves.
+        continue-on-error: true
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target.rust_target }}/release/${{ env.BIN_NAME }}"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+            upx "$BIN"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install upx
+            upx "$BIN"
+          else
+            choco install upx -y --no-progress
+            upx "$BIN"
+          fi
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.release_version || github.ref_name }}"
+          staging="${{ matrix.target.name }}-${version}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target.rust_target }}/release/${{ env.BIN_NAME }}" "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+          cp "$staging.tar.gz" "dshe-${{ matrix.target.name }}.tar.gz"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+          echo "ASSET_STABLE=dshe-${{ matrix.target.name }}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.release_version || github.ref_name }}"
+          $staging = "${{ matrix.target.name }}-$version"
+          New-Item -ItemType Directory -Force -Path $staging
+          Copy-Item "target/${{ matrix.target.rust_target }}/release/${{ env.BIN_NAME }}.exe" "$staging/"
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+          Copy-Item "$staging.zip" "dshe-${{ matrix.target.name }}.zip"
+          "ASSET=$staging.zip" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "ASSET_STABLE=dshe-${{ matrix.target.name }}.zip" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET_STABLE }}
+
+      - name: Create release and upload asset (tag push or versioned dispatch)
+        if: github.ref_type == 'tag' || github.event.inputs.release_version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.release_version || github.ref_name }}"
+          if ! gh release create "$version" "$ASSET" "$ASSET_STABLE" --title "$version" --generate-notes; then
+            echo "release already exists, uploading assets to it"
+            gh release upload "$version" "$ASSET" "$ASSET_STABLE" --clobber
+          fi
