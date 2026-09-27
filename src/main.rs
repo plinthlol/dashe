@@ -363,10 +363,22 @@ fn get_or_create_secret(print: bool) -> anyhow::Result<SecretKey> {
     }
 }
 
+/// reject any component that could escape the export root, or that would
+/// turn back into a separator or drive prefix once pushed onto a PathBuf.
 fn validate_path_component(component: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        !component.contains('/'),
-        "path components must not contain the only correct path separator, /"
+        !component.is_empty() && component != "." && component != "..",
+        "path components must not be empty, `.` or `..`"
+    );
+    anyhow::ensure!(
+        !component.contains('/') && !component.contains('\\'),
+        "path components must not contain a path separator, / or \\"
+    );
+    // on windows a colon starts a drive or stream, which `push` would honour
+    #[cfg(windows)]
+    anyhow::ensure!(
+        !component.contains(':'),
+        "path components must not contain a drive separator, :"
     );
     Ok(())
 }
@@ -593,10 +605,14 @@ async fn export(
         }
         targets.push(target);
     }
-    let op = mp.add(make_export_overall_progress());
-    op.set_length(collection.len() as u64);
-    for (i, ((name, hash), target)) in collection.iter().zip(targets.iter()).enumerate() {
-        op.set_position(i as u64);
+    // The overall bar tracks bytes written rather than a file count, so the
+    // chomp track means the same thing here as during the download. A
+    // collection entry carries no size, so the total is only known once the
+    // first `Size` event arrives; before that the track reads as indeterminate.
+    let op = mp.add(make_export_overall_progress(0));
+    let mut total: Option<u64> = None;
+    let mut written: u64 = 0;
+    for ((name, hash), target) in collection.iter().zip(targets.iter()) {
         let mut stream = db
             .export_with_opts(ExportOptions {
                 hash: *hash,
@@ -605,17 +621,28 @@ async fn export(
             })
             .stream()
             .await;
-        let pb = mp.add(make_export_item_progress());
-        pb.set_message(format!("exporting {name}"));
+        let pb = mp.add(make_export_item_progress(name));
+        let mut file_size = 0u64;
         while let Some(item) = stream.next().await {
             match item {
                 ExportProgressItem::Size(size) => {
+                    file_size = size;
                     pb.set_length(size);
                 }
                 ExportProgressItem::CopyProgress(offset) => {
                     pb.set_position(offset);
+                    op.set_position(written + offset);
                 }
                 ExportProgressItem::Done => {
+                    written += file_size;
+                    op.set_position(written);
+                    if total.is_none() {
+                        // No overall total is available, so grow the length as
+                        // files complete. The percentage stays conservative
+                        // rather than jumping backwards mid-transfer.
+                        total = Some(written);
+                        op.set_length(written);
+                    }
                     pb.finish_and_clear();
                 }
                 ExportProgressItem::Error(cause) => {
@@ -625,7 +652,7 @@ async fn export(
             }
         }
     }
-    op.finish_and_clear();
+    op.finish();
     Ok(())
 }
 
@@ -654,9 +681,11 @@ async fn per_request_progress(
         return;
     };
     pb.set_style(
-        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes} ({eta})")
-            .unwrap()
-            .progress_chars("██░"),
+        ProgressStyle::with_template(
+            "{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("██░"),
     );
     while let Ok(Some(msg)) = rx.recv().await {
         match msg {
@@ -1377,9 +1406,11 @@ fn make_import_item_progress() -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     pb.set_style(
-        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes}")
-            .unwrap()
-            .progress_chars("██░"),
+        ProgressStyle::with_template(
+            "{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes}",
+        )
+        .unwrap()
+        .progress_chars("██░"),
     );
     pb
 }
@@ -1420,7 +1451,7 @@ fn chomp_bar(state: &ProgressState) -> String {
     let width = chomp_width();
     let percent = bar_percent(state);
     let hash = percent * width / 100;
-    let mouth = if percent % 2 == 0 { 'C' } else { 'c' };
+    let mouth = if percent.is_multiple_of(2) { 'C' } else { 'c' };
     let mouth_style = console::Style::new().bold().yellow().for_stderr();
     let styled_mouth = mouth_style.apply_to(mouth).to_string();
     let mut out = String::with_capacity(width * 4);
@@ -1439,46 +1470,55 @@ fn chomp_bar(state: &ProgressState) -> String {
     out
 }
 
-fn make_download_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
-    // pacman (libalpm) style: transferred/total, chomping bar, countdown
-    pb.set_style(
-        ProgressStyle::with_template(" downloading {bytes} [{chomp}] ({msg})")
-            .unwrap()
-            .with_key("bytes", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+/// Register the two custom keys the pacman-style bars share: `bytes`
+/// (transferred/total, width-stable) and `chomp` (the chomping track).
+/// A `{msg}` in the template is reserved for the countdown.
+fn with_pacman_keys(style: ProgressStyle) -> ProgressStyle {
+    style
+        .with_key(
+            "bytes",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let text = bytes_over_total(state);
                 let _ = std::fmt::Write::write_str(w, &text);
-            })
-            .with_key("chomp", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+            },
+        )
+        .with_key(
+            "chomp",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
                 let text = chomp_bar(state);
                 let _ = std::fmt::Write::write_str(w, &text);
-            }),
-    );
+            },
+        )
+}
+
+/// Build a pacman-style bar: `{prefix} transferred/total [chomp] (countdown)`.
+/// `{msg}` is reserved for the countdown; the label goes in the prefix.
+fn make_pacman_bar(prefix: &str, tick_ms: u64) -> ProgressBar {
+    let pb = ProgressBar::hidden();
+    pb.enable_steady_tick(std::time::Duration::from_millis(tick_ms));
+    pb.set_style(with_pacman_keys(
+        ProgressStyle::with_template(" {prefix} {bytes} [{chomp}] ({msg})").unwrap(),
+    ));
+    pb.set_prefix(prefix.to_string());
     pb.set_message("-- sec");
     pb
 }
 
-fn make_export_overall_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
-    pb.set_style(
-        ProgressStyle::with_template(" exporting {wide_bar:.cyan/blue} {human_pos}/{human_len} ({eta})")
-            .unwrap()
-            .progress_chars("██░"),
-    );
+fn make_download_progress() -> ProgressBar {
+    make_pacman_bar("downloading", TICK_MS)
+}
+
+/// Overall bar for writing blobs to disk: bytes written over total bytes, so
+/// the chomp track means the same thing here as during the download.
+fn make_export_overall_progress(total: u64) -> ProgressBar {
+    let pb = make_pacman_bar("exporting", TICK_MS);
+    pb.set_length(total);
     pb
 }
 
-fn make_export_item_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-    pb.set_style(
-        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes}")
-            .unwrap()
-            .progress_chars("██░"),
-    );
-    pb
+/// Per-file export bar, same pacman design, labelled with the entry name.
+fn make_export_item_progress(name: &str) -> ProgressBar {
+    make_pacman_bar(&format!("exporting {name}"), 100)
 }
 
 pub async fn show_download_progress(
@@ -1844,5 +1884,43 @@ async fn main() -> anyhow::Result<()> {
     match res {
         Ok(()) => std::process::exit(0),
         Err(_) => std::process::exit(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A collection entry name comes from the remote peer, so it must never
+    /// be able to steer an export outside the destination directory.
+    #[test]
+    fn export_path_rejects_traversal_and_separators() {
+        for name in [
+            "../escaped",
+            "..",
+            ".",
+            "a/../../escaped",
+            "sub/../../escaped",
+            "sub/./x",
+            "",
+        ] {
+            assert!(
+                get_export_path(Path::new("/tmp/dest"), name).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn export_path_allows_ordinary_nested_names() {
+        let path = get_export_path(Path::new("/tmp/dest"), "myfolder/sub/b.txt").unwrap();
+        assert_eq!(path, Path::new("/tmp/dest/myfolder/sub/b.txt"));
+    }
+
+    /// On windows, a colon would otherwise be read back as a drive or stream.
+    #[cfg(windows)]
+    #[test]
+    fn export_path_rejects_drive_separators() {
+        assert!(get_export_path(Path::new(r"C:\dest"), "C:evil").is_err());
     }
 }
