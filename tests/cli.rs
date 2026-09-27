@@ -11,6 +11,16 @@ use iroh_blobs::ticket::BlobTicket;
 /// (a `--scan` receiver could otherwise pick another test's sender).
 static NET_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Take the network lock. A test that panicked while holding the lock poisons
+/// the mutex, which would otherwise make every later test panic too and bury
+/// the real failure. Recovering keeps the remaining tests running so the first
+/// genuine cause is still reported.
+fn lock_net_test() -> impl Drop {
+    NET_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // binary path
 fn dshe_bin() -> &'static str {
     env!("CARGO_BIN_EXE_dshe")
@@ -51,6 +61,7 @@ fn read_ticket(reader: &mut impl Read) -> io::Result<String> {
 
 #[test]
 fn send_recv_file() {
+    let _guard = lock_net_test();
     let name = "somefile.bin";
     let data = vec![0u8; 100];
     // create src and tgt dir, and src file
@@ -80,6 +91,7 @@ fn send_recv_file() {
 
 #[test]
 fn receive_closes_endpoint_no_iroh_socket_error() {
+    let _guard = lock_net_test();
     let name = "graceful-close.bin";
     let data = vec![0xabu8; 64];
     let src_dir = tempfile::tempdir().unwrap();
@@ -117,6 +129,7 @@ fn receive_closes_endpoint_no_iroh_socket_error() {
 
 #[test]
 fn send_recv_dir() {
+    let _guard = lock_net_test();
     fn create_file(base: &Path, i: usize, j: usize, k: usize) -> (PathBuf, Vec<u8>) {
         let name = base
             .join(format!("dir-{i}"))
@@ -180,7 +193,7 @@ fn send_recv_dir() {
 /// an explicit destination directory, and verify the structure is restored.
 #[test]
 fn send_recv_folder_archive_with_dest() {
-    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let _guard = lock_net_test();
     let src_dir = tempfile::tempdir().unwrap();
     let tgt_dir = tempfile::tempdir().unwrap();
     let dest = tgt_dir.path().join("out");
@@ -225,7 +238,7 @@ fn send_recv_folder_archive_with_dest() {
 /// `receive --scan` and picked by number.
 #[test]
 fn scan_finds_and_receives() {
-    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let _guard = lock_net_test();
     let src_dir = tempfile::tempdir().unwrap();
     let tgt_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(src_dir.path().join("scanned")).unwrap();
@@ -271,7 +284,7 @@ fn scan_finds_and_receives() {
 /// and the background worker exits by itself after the receiver finishes.
 #[test]
 fn bg_stop_exits_after_transfer() {
-    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let _guard = lock_net_test();
     let src_dir = tempfile::tempdir().unwrap();
     let tgt_dir = tempfile::tempdir().unwrap();
     std::fs::write(src_dir.path().join("bg.bin"), vec![0xABu8; 64]).unwrap();
@@ -333,7 +346,7 @@ fn bg_stop_exits_after_transfer() {
 /// cleared, a rerun delivers the whole share.
 #[test]
 fn receive_collision_aborts_before_writing() {
-    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let _guard = lock_net_test();
     let src_dir = tempfile::tempdir().unwrap();
     let tgt_dir = tempfile::tempdir().unwrap();
     let folder = src_dir.path().join("collide");
@@ -453,7 +466,7 @@ fn receive_collision_aborts_before_writing() {
 /// attempt re-downloads; with --resume the cache is kept.
 #[test]
 fn receive_collision_message_matches_resume_behavior() {
-    let _guard = NET_TEST_LOCK.lock().unwrap();
+    let _guard = lock_net_test();
     let src_dir = tempfile::tempdir().unwrap();
     let tgt_dir = tempfile::tempdir().unwrap();
     let folder = src_dir.path().join("resumecheck");
