@@ -64,6 +64,22 @@ with exactly one sender nearby it doesn't even ask — it just connects. senders
 broadcast a tiny beacon on the LAN every second, so this works with the router
 unplugged. turn on a phone hotspot, both machines join it, done.
 
+you can send several things in one go:
+
+```sh
+$ dshe send a.txt b.md docs/
+imported share a.txt, b.md, docs (1.2 MiB)
+```
+
+each file lands under its own name and each folder keeps its name as a prefix,
+so the receiver gets `a.txt`, `b.md` and `docs/...` side by side. sending a
+single folder still packs it into a tar.gz; several paths are sent as-is, and
+send flags go after a `--`:
+
+```sh
+$ dshe send a.txt b.md -- --noarchive
+```
+
 you can also point the receiver somewhere specific:
 
 ```sh
@@ -103,7 +119,11 @@ you want it to stick around, `--bg` if you want it in the background.
 ## notes
 
 - folder shares are packed into a single tar.gz before sending and unpacked on
-  the other side; `--noarchive` keeps them as plain files
+  the other side; `--noarchive` keeps them as plain files. this applies to a
+  single folder — sending several paths sends them as a plain collection
+- received archives are unpacked without following links or paths that point
+  outside the destination, and are refused if they expand past 64 GiB or
+  100,000 entries
 - interrupted transfers keep their partial cache only with `--resume`,
   otherwise it's cleaned up
 ## license

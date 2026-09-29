@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
     sync::Mutex,
@@ -277,6 +277,9 @@ fn scan_finds_and_receives() {
         std::fs::read(tgt_dir.path().join("scanned").join("f.bin")).unwrap(),
         vec![7u8; 1000]
     );
+    // The sender keeps beaconing until it is killed. Dropping the reader can
+    // leave it running, and a later `--scan` test would then see two senders.
+    drop(send_cmd);
     drop(ticket);
 }
 
@@ -517,5 +520,273 @@ fn receive_collision_message_matches_resume_behavior() {
     assert!(
         stderr.contains("the download will be repeated"),
         "expected no-resume message on stderr: {stderr}"
+    );
+}
+
+/// A hostile archive from a peer must not be able to write outside the
+/// destination directory, and the refusal must happen before any extraction.
+#[test]
+fn receive_rejects_tar_traversal() {
+    let _guard = lock_net_test();
+    let src_dir = tempfile::tempdir().unwrap();
+    // The escape target lives next to the destination, so a successful
+    // traversal would create it and be obvious.
+    let canary = src_dir.path().join("pwned.txt");
+
+    // Build a tar.gz containing `../pwned.txt`, one level above dest. The
+    // `tar` crate's Builder refuses to write `..` paths, so the hostile header
+    // is written by hand into a raw archive and then gzipped.
+    let tar_path = src_dir.path().join("evil.tar.gz");
+    {
+        let payload = b"owned".to_vec();
+        let mut header = [0u8; 512];
+        header[..5].copy_from_slice(b"pwned");
+        // mode, uid, gid, size, mtime, checksum, typeflag
+        let octal = |h: &mut [u8], off: usize, len: usize, val: &str| {
+            let field = &mut h[off..off + len];
+            let start = field.len() - 1 - val.len();
+            field[start..start + val.len()].copy_from_slice(val.as_bytes());
+        };
+        octal(&mut header, 100, 8, "0000644");
+        octal(&mut header, 108, 8, "0000000");
+        octal(&mut header, 116, 8, "0000000");
+        octal(&mut header, 124, 12, &format!("{:011o}", payload.len()));
+        octal(&mut header, 136, 12, "00000000000");
+        header[148..156].fill(b' ');
+        header[156] = b'0'; // regular file
+        header[257..262].copy_from_slice(b"ustar");
+        header[263..265].copy_from_slice(b"00");
+        let path = b"../pwned.txt";
+        assert!(path.len() < 100);
+        header[..path.len()].copy_from_slice(path);
+        // checksum is computed with the checksum field read as spaces
+        let sum: u32 = header.iter().map(|b| *b as u32).sum();
+        octal(&mut header, 148, 7, &format!("{sum:06o}"));
+        header[155] = b' ';
+
+        let mut raw = Vec::with_capacity(1024 + payload.len());
+        raw.extend_from_slice(&header);
+        raw.extend_from_slice(&payload);
+        raw.extend_from_slice(&[0u8; 1024]);
+
+        let file = std::fs::File::create(&tar_path).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        enc.write_all(&raw).unwrap();
+        enc.finish().unwrap();
+    }
+
+    let mut send_cmd = duct::cmd(
+        dshe_bin(),
+        [
+            "send",
+            "--noarchive",
+            "--relay",
+            "disabled",
+            tar_path.as_os_str().to_str().unwrap(),
+        ],
+    )
+    .dir(src_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .reader()
+    .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+
+    // The archive name ends in .tar.gz, so the receiver treats it as an
+    // archived share and unpacks it into dest.
+    let dest = src_dir.path().join("dest");
+    std::fs::create_dir_all(&dest).unwrap();
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        [
+            "receive",
+            "--relay",
+            "disabled",
+            &ticket,
+            dest.to_str().unwrap(),
+        ],
+    )
+    .dir(src_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run()
+    .unwrap();
+    assert!(
+        !receive_output.status.success(),
+        "traversal archive was accepted: {receive_output:?}"
+    );
+    assert!(
+        !canary.exists(),
+        "tar traversal escaped the destination directory: {}",
+        canary.display()
+    );
+}
+
+/// Several paths may be given in one go. Files land under their own name,
+/// directories keep their name as a prefix, and a path given by absolute path
+/// contributes only its file name.
+#[test]
+fn send_recv_multiple_paths() {
+    let _guard = lock_net_test();
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    std::fs::write(src_dir.path().join("a.txt"), "AAA").unwrap();
+    std::fs::write(src_dir.path().join("b.md"), "BBB").unwrap();
+    std::fs::create_dir_all(src_dir.path().join("dir1").join("sub")).unwrap();
+    std::fs::write(src_dir.path().join("dir1").join("one.txt"), "one").unwrap();
+    std::fs::write(
+        src_dir.path().join("dir1").join("sub").join("two.txt"),
+        "two",
+    )
+    .unwrap();
+    let solo = src_dir.path().join("solo.bin");
+    std::fs::write(&solo, "solo").unwrap();
+
+    let mut send_cmd = duct::cmd(
+        dshe_bin(),
+        [
+            "send",
+            "--noarchive",
+            "--relay",
+            "disabled",
+            "a.txt",
+            "b.md",
+            "dir1",
+            solo.to_str().unwrap(),
+        ],
+    )
+    .dir(src_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .reader()
+    .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+    let ticket = BlobTicket::from_str(&ticket).unwrap();
+
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        ["receive", "--relay", "disabled", &ticket.to_string()],
+    )
+    .dir(tgt_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .run()
+    .unwrap();
+    assert!(receive_output.status.success(), "{receive_output:?}");
+
+    for (rel, data) in [
+        ("a.txt", "AAA"),
+        ("b.md", "BBB"),
+        ("solo.bin", "solo"),
+        ("dir1/one.txt", "one"),
+        ("dir1/sub/two.txt", "two"),
+    ] {
+        let got = std::fs::read_to_string(tgt_dir.path().join(rel)).unwrap();
+        assert_eq!(got, data, "content mismatch for {rel}");
+    }
+}
+
+/// The bare `dshe a b c` form asks first, then sends everything listed.
+#[test]
+fn bare_multi_path_send_confirms_then_sends() {
+    let _guard = lock_net_test();
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    std::fs::write(src_dir.path().join("one.txt"), "1").unwrap();
+    std::fs::write(src_dir.path().join("two.txt"), "2").unwrap();
+
+    let mut send_cmd = duct::cmd(dshe_bin(), ["one.txt", "two.txt", "--", "--noarchive"])
+        .dir(src_dir.path())
+        .env_remove("RUST_LOG")
+        .stdin_bytes("y\n".as_bytes())
+        .stderr_to_stdout()
+        .reader()
+        .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+    let ticket = BlobTicket::from_str(&ticket).unwrap();
+
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        ["receive", "--relay", "disabled", &ticket.to_string()],
+    )
+    .dir(tgt_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .run()
+    .unwrap();
+    assert!(receive_output.status.success(), "{receive_output:?}");
+    assert_eq!(
+        std::fs::read_to_string(tgt_dir.path().join("one.txt")).unwrap(),
+        "1"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tgt_dir.path().join("two.txt")).unwrap(),
+        "2"
+    );
+}
+
+/// The untar root is the real collision target: a pre-existing folder with
+/// the share's name must abort before the archive is unpacked into it.
+#[test]
+fn receive_archive_collision_aborts_before_unpack() {
+    let _guard = lock_net_test();
+    let src_dir = tempfile::tempdir().unwrap();
+    let tgt_dir = tempfile::tempdir().unwrap();
+    let folder = src_dir.path().join("collidefolder");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(folder.join("a.txt"), "hello").unwrap();
+    std::fs::write(folder.join("sub").join("b.txt"), "world").unwrap();
+
+    let mut send_cmd = duct::cmd(dshe_bin(), ["send", folder.as_os_str().to_str().unwrap()])
+        .dir(src_dir.path())
+        .env_remove("RUST_LOG")
+        .stderr_to_stdout()
+        .reader()
+        .unwrap();
+    let ticket = read_ticket(&mut send_cmd).unwrap();
+
+    // dest/collidefolder already exists with different contents. Only the
+    // .tar.gz is a fresh name, so a preflight that ignores the untar root
+    // would happily unpack over this directory.
+    let dest = tgt_dir.path().join("dest");
+    let existing = dest.join("collidefolder");
+    std::fs::create_dir_all(&existing).unwrap();
+    std::fs::write(existing.join("a.txt"), "original").unwrap();
+    std::fs::write(existing.join("do-not-clobber.txt"), "keep").unwrap();
+
+    let receive_output = duct::cmd(
+        dshe_bin(),
+        [
+            "receive",
+            "--relay",
+            "disabled",
+            &ticket,
+            dest.to_str().unwrap(),
+        ],
+    )
+    .dir(tgt_dir.path())
+    .env_remove("RUST_LOG")
+    .stderr_to_stdout()
+    .stdout_capture()
+    .stderr_capture()
+    .unchecked()
+    .run()
+    .unwrap();
+    assert!(!receive_output.status.success(), "{receive_output:?}");
+    assert_eq!(
+        std::fs::read_to_string(existing.join("a.txt")).unwrap(),
+        "original",
+        "existing file was overwritten"
+    );
+    assert!(
+        existing.join("do-not-clobber.txt").exists(),
+        "unrelated file in the target folder was removed"
+    );
+    assert!(
+        !existing.join("sub").exists(),
+        "archive contents were unpacked despite the collision"
     );
 }

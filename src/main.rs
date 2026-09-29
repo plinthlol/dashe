@@ -61,7 +61,10 @@ pub struct Args {
     pub command: Option<Commands>,
 
     /// the file or folder to send. asks before it starts.
-    pub path: Option<PathBuf>,
+    /// several paths may be given to send them as one share.
+    /// send flags may follow after a `--` separator.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub paths: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -191,9 +194,10 @@ impl From<RelayModeOption> for RelayMode {
 
 #[derive(Parser, Debug)]
 pub struct SendArgs {
-    /// path to the file or folder to send. the last component of the path
-    /// becomes the name of the share.
-    pub path: PathBuf,
+    /// paths to the files or folders to send. the last component of each
+    /// path becomes the name of its share.
+    #[clap(required = true)]
+    pub paths: Vec<PathBuf>,
 
     /// what goes into the ticket.
     ///
@@ -261,21 +265,32 @@ pub struct ReceiveArgs {
     pub common: CommonArgs,
 }
 
+/// The user's home directory. `HOME` on unix, `USERPROFILE` on windows, where
+/// `HOME` is frequently unset.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
 /// turn a leading `~` into the home directory.
 fn expand_home(path: &Path) -> PathBuf {
     let Some(str_path) = path.to_str() else {
         return path.to_path_buf();
     };
-    if str_path == "~" {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home);
-        }
+    let rest = if str_path == "~" {
+        ""
     } else if let Some(rest) = str_path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+        rest
+    } else {
+        return path.to_path_buf();
+    };
+    match home_dir() {
+        Some(home) if rest.is_empty() => home,
+        Some(home) => home.join(rest),
+        None => path.to_path_buf(),
     }
-    path.to_path_buf()
 }
 
 /// Options to configure what is included in a [`EndpointAddr`]
@@ -431,7 +446,7 @@ pub fn canonicalized_path_to_string(
 /// read a file or folder into the blob store. returns the collection tag,
 /// total size and the files inside.
 async fn import(
-    path: PathBuf,
+    paths: Vec<PathBuf>,
     db: &Store,
     mp: &mut MultiProgress,
     jobs: Option<usize>,
@@ -441,34 +456,58 @@ async fn import(
             .map(|n| n.get())
             .unwrap_or(1)
     });
-    let path = path.canonicalize()?;
-    anyhow::ensure!(path.exists(), "path {} does not exist", path.display());
-    let root = path.parent().context("context get parent")?;
-    // walkdir also works for files, so we don't need to special case them
-    let files = WalkDir::new(path.clone()).into_iter();
-    // flatten the directory structure into a list of (name, path) pairs.
-    // ignore symlinks.
-    let data_sources: Vec<(String, PathBuf)> = files
-        .map(|entry| {
+    anyhow::ensure!(!paths.is_empty(), "no paths to send");
+    let mut data_sources: Vec<(String, PathBuf)> = Vec::new();
+    for path in paths {
+        let path = path.canonicalize()?;
+        anyhow::ensure!(path.exists(), "path {} does not exist", path.display());
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .with_context(|| format!("cannot derive a share name from {}", path.display()))?;
+        anyhow::ensure!(
+            !name.is_empty() && name != "." && name != "..",
+            "{} has no usable name to share it under",
+            path.display()
+        );
+        if path.is_file() {
+            data_sources.push((name, path));
+            continue;
+        }
+        // Directory: every file inside is named `<dir>/<relative path>`, so
+        // several paths can share one collection without colliding.
+        // Symlinks are skipped; walkdir handles the recursion.
+        for entry in WalkDir::new(&path) {
             let entry = entry?;
             if !entry.file_type().is_file() {
-                // Skip symlinks. Directories are handled by WalkDir.
-                return Ok(None);
+                continue;
             }
-            let path = entry.into_path();
-            let relative = path.strip_prefix(root)?;
-            let name = canonicalized_path_to_string(relative, true)?;
-            anyhow::Ok(Some((name, path)))
-        })
-        .filter_map(Result::transpose)
-        .collect::<anyhow::Result<Vec<_>>>()?;
+            let relative = entry.path().strip_prefix(&path)?;
+            let relative = canonicalized_path_to_string(relative, true)?;
+            data_sources.push((format!("{name}/{relative}"), entry.into_path()));
+        }
+    }
+    data_sources.sort_by(|(a, _), (b, _)| a.cmp(b));
+    // two paths may still name the same entry; refuse rather than import twice
+    for pair in data_sources.windows(2) {
+        anyhow::ensure!(
+            pair[0].0 != pair[1].0,
+            "two of the given paths both produce the entry {}",
+            pair[0].0
+        );
+    }
+    // Sum the sizes up front so the overall bar has a length and can show a
+    // real countdown. They come from the filesystem, not the store, so the
+    // numbers are the bytes about to be imported.
+    let total_bytes: u64 = data_sources
+        .iter()
+        .map(|(_, p)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+        .sum();
     // import all the files in parallel, collect names and temp tags
     // Only show an overall bar when there are multiple files. For a single
     // file it would just flash in and out.
     let op = if data_sources.len() > 1 {
-        let op = mp.add(make_import_overall_progress());
-        op.set_message(format!("importing {} files", data_sources.len()));
-        op.set_length(data_sources.len() as u64);
+        let op = mp.add(make_import_overall_progress(total_bytes));
         Some(op)
     } else {
         None
@@ -479,9 +518,6 @@ async fn import(
             let op = op.clone();
             let mp = mp.clone();
             async move {
-                if let Some(op) = &op {
-                    op.inc(1);
-                }
                 let import = db.add_path_with_opts(AddPathOptions {
                     path,
                     mode: ImportMode::TryReference,
@@ -501,9 +537,12 @@ async fn import(
                     match item {
                         AddProgressItem::Size(size) => {
                             item_size = size;
+                            if let Some(op) = &op {
+                                op.inc(size);
+                            }
                             if size > MIN_IMPORT_BAR_BYTES {
                                 let bar = mp.add(make_import_item_progress());
-                                bar.set_message(format!("copying {name}"));
+                                bar.set_prefix(format!("copying {name}"));
                                 bar.set_length(size);
                                 pb = Some(bar);
                             }
@@ -515,7 +554,8 @@ async fn import(
                         }
                         AddProgressItem::CopyDone => {
                             if let Some(pb) = &pb {
-                                pb.set_message(format!("computing outboard {name}"));
+                                // the same bar tracks the outboard phase
+                                pb.set_prefix(format!("hashing {name}"));
                                 pb.set_position(0);
                             }
                         }
@@ -656,6 +696,102 @@ async fn export(
     Ok(())
 }
 
+/// Hard caps applied while unpacking an archive received from a peer.
+/// A tiny `.tar.gz` can otherwise expand until the disk is full.
+const MAX_ARCHIVE_ENTRIES: u64 = 100_000;
+const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+
+/// Resolve one tar entry path inside `root`, rejecting anything that would
+/// escape it or turn back into a separator once pushed onto a `PathBuf`.
+///
+/// A `.` component is skipped: the component iterator keeps a leading one
+/// (and drops interior ones), and it resolves to the current directory either
+/// way, so it cannot escape. `..`, a root prefix and a windows drive prefix
+/// stay visible and are rejected.
+fn resolve_archive_entry(root: &Path, entry_path: &Path) -> anyhow::Result<PathBuf> {
+    let mut normalized = Vec::new();
+    for component in entry_path.components() {
+        let part = match component {
+            Component::Normal(part) => part,
+            Component::CurDir => continue,
+            _ => anyhow::bail!(
+                "archive entry {} escapes the destination directory",
+                entry_path.display()
+            ),
+        };
+        let part = part
+            .to_str()
+            .with_context(|| format!("invalid character in path {}", entry_path.display()))?;
+        validate_path_component(part)?;
+        normalized.push(part);
+    }
+    let mut resolved = root.to_path_buf();
+    for part in normalized {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+/// Unpack a received `.tar.gz` into `dest`.
+///
+/// Every entry is validated before anything is written: paths must stay
+/// inside `dest`, and entries that can write outside it (symlinks, hardlinks,
+/// devices, fifos) are refused outright. This is data from a peer, so a
+/// hostile archive must not be able to touch the rest of the filesystem.
+fn unpack_archive(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+    // Reopen for each pass: `entries()` consumes the stream, and `unpack`
+    // needs it positioned at the start of the archive again.
+    let open = || -> anyhow::Result<flate2::read::GzDecoder<std::fs::File>> {
+        let file =
+            std::fs::File::open(archive).with_context(|| format!("open {}", archive.display()))?;
+        Ok(flate2::read::GzDecoder::new(file))
+    };
+    let mut tar = tar::Archive::new(open()?);
+    tar.set_preserve_permissions(false);
+    tar.set_preserve_mtime(false);
+    tar.set_overwrite(true);
+
+    // Two passes: validate every header first, then extract. A single pass
+    // would already have written earlier entries by the time a hostile one
+    // shows up in the middle of the archive.
+    let mut entries = 0u64;
+    let mut total_bytes = 0u64;
+    for entry in tar.entries()? {
+        let entry = entry.with_context(|| format!("read {}", archive.display()))?;
+        let path = entry
+            .path()
+            .with_context(|| format!("invalid entry path in {}", archive.display()))?
+            .into_owned();
+        resolve_archive_entry(dest, &path)?;
+        match entry.header().entry_type() {
+            tar::EntryType::Regular | tar::EntryType::Directory => {}
+            tar::EntryType::Continuous | tar::EntryType::XGlobalHeader => continue,
+            other => anyhow::bail!(
+                "archive entry {} has unsupported type {other:?}; refusing to extract",
+                path.display()
+            ),
+        }
+        entries = entries.saturating_add(1);
+        anyhow::ensure!(
+            entries <= MAX_ARCHIVE_ENTRIES,
+            "archive has more than {MAX_ARCHIVE_ENTRIES} entries, refusing to extract"
+        );
+        total_bytes = total_bytes.saturating_add(entry.header().size().unwrap_or(0));
+        anyhow::ensure!(
+            total_bytes <= MAX_ARCHIVE_BYTES,
+            "archive expands to more than {MAX_ARCHIVE_BYTES} bytes, refusing to extract"
+        );
+    }
+
+    // Validation is complete for every header, so extraction can proceed.
+    let mut tar = tar::Archive::new(open()?);
+    tar.set_preserve_permissions(false);
+    tar.set_preserve_mtime(false);
+    tar.set_overwrite(true);
+    tar.unpack(dest)?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct PerConnectionProgress {
     endpoint_id: String,
@@ -672,6 +808,7 @@ async fn per_request_progress(
     mut rx: irpc::channel::mpsc::Receiver<RequestUpdate>,
 ) {
     let pb = mp.add(ProgressBar::hidden());
+    pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
     let endpoint_id = if let Some(connection) = connections.lock().unwrap().get_mut(&connection_id)
     {
         connection.requests.insert(request_id, pb.clone());
@@ -680,19 +817,15 @@ async fn per_request_progress(
         error!("got request for unknown connection {connection_id}");
         return;
     };
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes} ({eta})",
-        )
-        .unwrap()
-        .progress_chars("██░"),
-    );
+    pb.set_style(with_pacman_keys(
+        ProgressStyle::with_template(" serving {prefix} {bytes} [{chomp}] ({countdown})").unwrap(),
+    ));
     while let Ok(Some(msg)) = rx.recv().await {
         match msg {
             RequestUpdate::Started(msg) => {
-                pb.set_message(format!(
-                    "n {} r {}/{} i {} # {}",
-                    endpoint_id,
+                pb.set_prefix(format!(
+                    "{} r {}/{} i {} # {}",
+                    &endpoint_id[..endpoint_id.len().min(8)],
                     connection_id,
                     request_id,
                     msg.index,
@@ -912,43 +1045,60 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
     }
     // todo: remove this as soon as we have a mem store that does not require a temp dir,
     // or create a temp dir outside the current directory.
-    if cwd.join(&args.path) == cwd {
+    if args.paths.iter().any(|p| cwd.join(p) == cwd) {
         println!("can not share from the current directory");
         std::process::exit(1);
     }
 
     let mut mp = MultiProgress::new();
     let mp2 = mp.clone();
-    let path = args.path;
+    let paths = args.paths;
 
-    // Compress folders into a single tar.gz before sending, unless
-    // --noarchive was given. The receiver unpacks it automatically.
-    let archived = path.is_dir() && !args.noarchive;
-    let share_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .context("invalid path name")?
-        .to_string();
+    // A single directory can be packed into one tar.gz, which the receiver
+    // unpacks automatically. Several paths would have to land under a parent
+    // folder instead, so they are sent as a plain collection.
+    let archived = !args.noarchive && paths.len() == 1 && paths[0].is_dir();
+    let share_name = {
+        let name = if archived {
+            paths[0]
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("invalid path name")?
+                .to_string()
+        } else {
+            "dashe".to_string()
+        };
+        let sanitized = sanitize_untrusted(&name).replace('/', "_");
+        if sanitized.is_empty() {
+            "dashe".to_string()
+        } else {
+            sanitized
+        }
+    };
     let archive_file: Option<PathBuf> = if archived {
-        let folder_name = share_name.clone();
+        let folder_name = paths[0]
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("invalid path name")?
+            .to_string();
         let archive_dir = std::env::temp_dir().join(format!("dashe-{}", hex::encode(&suffix[..8])));
         std::fs::create_dir_all(&archive_dir)?;
         let archive_path = archive_dir.join(format!("{folder_name}.tar.gz"));
         let file = std::fs::File::create(&archive_path)?;
         let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         let mut tar = tar::Builder::new(enc);
-        tar.append_dir_all(&folder_name, &path)?;
+        tar.append_dir_all(&folder_name, &paths[0])?;
         tar.into_inner()?.finish()?;
         Some(archive_path)
     } else {
         None
     };
-    let import_path = match &archive_file {
-        Some(p) => p.clone(),
-        None => path.clone(),
+    let import_paths: Vec<PathBuf> = match &archive_file {
+        Some(p) => vec![p.clone()],
+        None => paths.clone(),
     };
 
-    let path2 = import_path;
+    let path2 = import_paths;
     let blobs_data_dir2 = blobs_data_dir.clone();
     let (progress_tx, progress_rx) = mpsc::channel(32);
     let (done_tx, mut done_rx) = mpsc::channel::<()>(1);
@@ -1028,17 +1178,24 @@ async fn send(args: SendArgs) -> anyhow::Result<()> {
         ));
     }
 
-    let entry_type = if path.is_file() {
-        "file"
-    } else if archived {
+    let entry_type = if archived {
         "folder (compressed)"
+    } else if paths.len() == 1 && paths[0].is_file() {
+        "file"
     } else {
-        "directory"
+        "share"
     };
     println!(
         "imported {} {} ({})",
         entry_type,
-        style(path.display()).bold(),
+        style(
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .bold(),
         HumanBytes(size),
     );
     if args.debug || args.common.verbose > 1 {
@@ -1252,6 +1409,30 @@ struct DiscoveredSender {
     addrs: Vec<std::net::SocketAddr>,
 }
 
+/// Make an untrusted string safe to print on a terminal: drop control
+/// characters and keep it short. Beacon fields come straight off the network
+/// and are shown in the picker; the escape byte itself is what would let a
+/// name repaint the screen or hide text, so removing it is enough.
+fn sanitize_untrusted(s: &str) -> String {
+    const MAX: usize = 64;
+    let mut out = String::with_capacity(s.len().min(MAX));
+    for c in s.chars() {
+        if out.len() >= MAX {
+            out.push('…');
+            break;
+        }
+        if c.is_control() {
+            continue;
+        }
+        out.push(c);
+    }
+    if out.is_empty() {
+        "?".to_string()
+    } else {
+        out
+    }
+}
+
 /// Listen for beacons for `duration` and return the discovered senders.
 async fn discover_senders(duration: Duration) -> anyhow::Result<Vec<DiscoveredSender>> {
     use socket2::{Domain, Protocol, Socket, Type};
@@ -1299,7 +1480,7 @@ async fn discover_senders(duration: Duration) -> anyhow::Result<Vec<DiscoveredSe
                 endpoint_id: id.to_string(),
                 hash: hash.to_string(),
                 hash_seq: format == "1",
-                name: name.to_string(),
+                name: sanitize_untrusted(name),
                 size: size.parse().unwrap_or(0),
                 addrs: Vec::new(),
             });
@@ -1391,28 +1572,18 @@ fn build_ticket(sender: &DiscoveredSender) -> anyhow::Result<BlobTicket> {
 /// they finish too fast and the bar just flashes.
 const MIN_IMPORT_BAR_BYTES: u64 = 8 * 1024 * 1024;
 
-fn make_import_overall_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
-    pb.set_style(
-        ProgressStyle::with_template("{msg} {wide_bar:.cyan/blue} {pos}/{len}")
-            .unwrap()
-            .progress_chars("██░"),
-    );
+/// Overall import bar for a multi-file share. Counts bytes across all files,
+/// so the chomp track means the same thing here as on the receiver side.
+fn make_import_overall_progress(total: u64) -> ProgressBar {
+    let pb = make_pacman_bar("importing", TICK_MS);
+    pb.set_length(total);
     pb
 }
 
+/// Per-file import bar. The prefix carries the file name, so `{msg}` is free
+/// for the countdown.
 fn make_import_item_progress() -> ProgressBar {
-    let pb = ProgressBar::hidden();
-    pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{msg} {wide_bar:.cyan/blue} {binary_bytes} / {binary_total_bytes}",
-        )
-        .unwrap()
-        .progress_chars("██░"),
-    );
-    pb
+    make_pacman_bar("copying", TICK_MS)
 }
 
 /// Bar width in cells: whatever is left after the stats columns,
@@ -1470,9 +1641,9 @@ fn chomp_bar(state: &ProgressState) -> String {
     out
 }
 
-/// Register the two custom keys the pacman-style bars share: `bytes`
-/// (transferred/total, width-stable) and `chomp` (the chomping track).
-/// A `{msg}` in the template is reserved for the countdown.
+/// Register the three custom keys the pacman-style bars share: `bytes`
+/// (transferred/total, width-stable), `chomp` (the chomping track) and
+/// `countdown` (time left, or `--` while it cannot be known yet).
 fn with_pacman_keys(style: ProgressStyle) -> ProgressStyle {
     style
         .with_key(
@@ -1489,23 +1660,63 @@ fn with_pacman_keys(style: ProgressStyle) -> ProgressStyle {
                 let _ = std::fmt::Write::write_str(w, &text);
             },
         )
+        .with_key(
+            "countdown",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let text = countdown(state);
+                let _ = std::fmt::Write::write_str(w, &text);
+            },
+        )
+}
+
+/// Time remaining, from indicatif's smoothed transfer rate. Without a length
+/// or with nothing moved yet there is no rate to extrapolate from, so it
+/// shows `--` rather than a made-up number.
+fn countdown(state: &ProgressState) -> String {
+    if state.is_finished() {
+        return "done".to_string();
+    }
+    let Some(len) = state.len() else {
+        return "--".to_string();
+    };
+    let pos = state.pos();
+    if pos == 0 || len == 0 || pos >= len {
+        return "--".to_string();
+    }
+    let per_sec = state.per_sec();
+    if !per_sec.is_finite() || per_sec <= 0.0 {
+        return "--".to_string();
+    }
+    let remaining = (len - pos) as f64 / per_sec;
+    HumanDuration(Duration::from_secs_f64(remaining.clamp(0.0, 86400.0))).to_string()
 }
 
 /// Build a pacman-style bar: `{prefix} transferred/total [chomp] (countdown)`.
-/// `{msg}` is reserved for the countdown; the label goes in the prefix.
+/// The label goes in the prefix; `{countdown}` is derived from progress.
 fn make_pacman_bar(prefix: &str, tick_ms: u64) -> ProgressBar {
     let pb = ProgressBar::hidden();
     pb.enable_steady_tick(std::time::Duration::from_millis(tick_ms));
     pb.set_style(with_pacman_keys(
-        ProgressStyle::with_template(" {prefix} {bytes} [{chomp}] ({msg})").unwrap(),
+        ProgressStyle::with_template(" {prefix} {bytes} [{chomp}] ({countdown})").unwrap(),
     ));
     pb.set_prefix(prefix.to_string());
+    // Default message; the receiver's rate loop overwrites it with a real ETA.
     pb.set_message("-- sec");
     pb
 }
 
 fn make_download_progress() -> ProgressBar {
-    make_pacman_bar("downloading", TICK_MS)
+    // The receive loop computes a precise ETA from its own smoothed rate and
+    // writes it to the message, so this bar reads `{msg}` rather than
+    // deriving one from position alone.
+    let pb = ProgressBar::hidden();
+    pb.enable_steady_tick(std::time::Duration::from_millis(TICK_MS));
+    pb.set_style(with_pacman_keys(
+        ProgressStyle::with_template(" {prefix} {bytes} [{chomp}] ({msg})").unwrap(),
+    ));
+    pb.set_prefix("downloading".to_string());
+    pb.set_message("-- sec");
+    pb
 }
 
 /// Overall bar for writing blobs to disk: bytes written over total bytes, so
@@ -1735,15 +1946,38 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
                 .unwrap_or(&first_name)
                 .to_string()
         };
+        // An archive is written to disk as `dest/<name>.tar.gz` and then
+        // unpacked into `dest/<name>`. Both are target paths: preflight the
+        // untar root too, or a pre-existing folder of that name would be
+        // merged into and overwritten.
+        let archive_file = is_archive.then(|| dest.join(&first_name));
+        let untar_root = is_archive.then(|| dest.join(&root_name));
+        for target in [archive_file.as_ref(), untar_root.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if target.exists() {
+                eprintln!(
+                    "target {} already exists. Nothing was written to {}.",
+                    target.display(),
+                    dest.display()
+                );
+                eprintln!(
+                    "You can remove the file or directory and try again{}.",
+                    if args.resume {
+                        ", keeping the partial cache, so the download will not be repeated"
+                    } else {
+                        ", but the download will be repeated"
+                    }
+                );
+                anyhow::bail!("target {} already exists", target.display());
+            }
+        }
         export(&db, collection, &mut mp, &dest, args.resume).await?;
-        if is_archive {
-            // Unpack the archive into the destination directory and drop it.
-            let archive_target = dest.join(&first_name);
-            let file = std::fs::File::open(&archive_target)
-                .with_context(|| format!("open {}", archive_target.display()))?;
-            let gz = flate2::read::GzDecoder::new(file);
-            tar::Archive::new(gz).unpack(&dest)?;
-            std::fs::remove_file(&archive_target)?;
+        if let Some(archive_file) = &archive_file {
+            // Validated entry by entry: no traversal, no symlink escapes.
+            unpack_archive(archive_file, &dest)?;
+            std::fs::remove_file(archive_file)?;
         }
         anyhow::Ok((root_name, total_files, payload_size, stats))
     };
@@ -1797,10 +2031,30 @@ async fn receive(args: ReceiveArgs) -> anyhow::Result<()> {
 
 /// Ask the user whether to send the given path. Returns true for y/yes.
 /// In an interactive terminal, a single keypress is enough (no Enter).
-fn confirm_send(path: &Path) -> anyhow::Result<bool> {
-    anyhow::ensure!(path.exists(), "path {} does not exist", path.display(),);
+fn confirm_send(paths: &[PathBuf]) -> anyhow::Result<bool> {
+    anyhow::ensure!(!paths.is_empty(), "no paths to send");
+    // Everything after a `--` separator is a send flag, not a path.
+    let split = paths.iter().position(|p| p.as_os_str() == "--");
+    let candidates = match split {
+        Some(i) => &paths[..i],
+        None => paths,
+    };
+    anyhow::ensure!(!candidates.is_empty(), "no paths to send");
+    for path in candidates {
+        anyhow::ensure!(path.exists(), "path {} does not exist", path.display(),);
+    }
+    let paths = candidates;
     use std::io::{IsTerminal, Read, Write as _};
-    print!("send {}? [y/N] ", path.display());
+    let listed = paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if paths.len() == 1 {
+        print!("send {}? [y/N] ", listed);
+    } else {
+        print!("send {} files? [y/N] ", paths.len());
+    }
     std::io::stdout().flush()?;
     let answer = if std::io::stdin().is_terminal() {
         // Single keypress, no Enter needed.
@@ -1861,17 +2115,37 @@ async fn main() -> anyhow::Result<()> {
     let command = match args.command {
         Some(command) => command,
         None => {
-            let Some(path) = args.path else {
+            let Some(paths) = args.paths else {
                 Args::command().print_help()?;
                 std::process::exit(2);
             };
-            if !confirm_send(&path)? {
+            if !confirm_send(&paths)? {
                 println!("aborted");
                 std::process::exit(0);
             }
-            // Re-parse through clap so the defaults are applied.
-            let path_str = path.as_os_str().to_str().context("invalid path")?;
-            Commands::Send(SendArgs::try_parse_from(["dshe", path_str])?)
+            // Re-parse through clap so the defaults are applied. Anything after
+            // a `--` separator is a send flag, so `dshe a b -- --noarchive`
+            // behaves like `dshe send a b --noarchive`.
+            let mut argv = vec!["dshe".to_string()];
+            let split = paths.iter().position(|p| p.as_os_str() == "--");
+            let (paths, flags) = match split {
+                Some(i) => (paths[..i].to_vec(), paths[i + 1..].to_vec()),
+                None => (paths.clone(), Vec::new()),
+            };
+            anyhow::ensure!(!paths.is_empty(), "no paths to send");
+            argv.extend(
+                paths
+                    .iter()
+                    .map(|p| p.to_str().context("invalid path").map(str::to_string))
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            );
+            argv.extend(
+                flags
+                    .iter()
+                    .map(|f| f.to_str().context("invalid flag").map(str::to_string))
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            );
+            Commands::Send(SendArgs::try_parse_from(argv)?)
         }
     };
     let res = match command {
@@ -1922,5 +2196,56 @@ mod tests {
     #[test]
     fn export_path_rejects_drive_separators() {
         assert!(get_export_path(Path::new(r"C:\dest"), "C:evil").is_err());
+    }
+
+    /// An archive entry name is chosen by the sender and must not be able to
+    /// steer extraction outside the destination directory.
+    #[test]
+    fn archive_entries_reject_traversal() {
+        for name in [
+            "../escaped",
+            "..",
+            "/etc/passwd",
+            "a/../../escaped",
+            "sub/../../escaped",
+            "a/../../../../etc/shadow",
+        ] {
+            let path = Path::new(name);
+            assert!(
+                resolve_archive_entry(Path::new("/tmp/dest"), path).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_entries_allow_ordinary_nested_names() {
+        let path =
+            resolve_archive_entry(Path::new("/tmp/dest"), Path::new("myfolder/sub/b.txt")).unwrap();
+        assert_eq!(path, Path::new("/tmp/dest/myfolder/sub/b.txt"));
+        let dir = resolve_archive_entry(Path::new("/tmp/dest"), Path::new("myfolder")).unwrap();
+        assert_eq!(dir, Path::new("/tmp/dest/myfolder"));
+        // `.` is normalized away by the component iterator and cannot escape
+        let normalized =
+            resolve_archive_entry(Path::new("/tmp/dest"), Path::new("./myfolder/x")).unwrap();
+        assert_eq!(normalized, Path::new("/tmp/dest/myfolder/x"));
+        // a bare `.` entry is the destination root itself
+        let root = resolve_archive_entry(Path::new("/tmp/dest"), Path::new(".")).unwrap();
+        assert_eq!(root, Path::new("/tmp/dest"));
+    }
+
+    /// Beacon fields are attacker-controlled and printed in the scan picker.
+    #[test]
+    fn sanitize_untrusted_strips_escapes_and_bounds_length() {
+        assert_eq!(sanitize_untrusted("myfolder"), "myfolder");
+        // the escape byte is dropped, so the sequence can no longer be honored
+        assert_eq!(sanitize_untrusted("\u{1b}[31mred\u{1b}[0m"), "[31mred[0m");
+        assert_eq!(sanitize_untrusted("a\nb\tc"), "abc");
+        // long names are truncated rather than wrapping the picker
+        let long = "x".repeat(200);
+        let out = sanitize_untrusted(&long);
+        assert!(out.chars().count() <= 65, "name not bounded: {}", out.len());
+        // an all-control name still renders as something
+        assert_eq!(sanitize_untrusted("\u{1b}\u{7}"), "?");
     }
 }
